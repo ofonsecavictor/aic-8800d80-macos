@@ -12,6 +12,7 @@ RX_HEADER_LENGTH = 60
 IS_80211_MPDU = 1 << 1
 ACTION_SUBTYPE = 0x00d0
 AWDL_ACTION_PREFIX = b'\x7f\x00\x17\xf2\x08'
+AWDL_ACTION_HEADER_LENGTH = 40  # 24-byte 802.11 header + OWL's 16-byte action header.
 REMAIN_ON_CHANNEL_REQUEST_ID = 70
 REMAIN_ON_CHANNEL_CONFIRMATION_ID = 71
 SET_FILTER_REQUEST_ID = 14
@@ -135,3 +136,9 @@ def is_awdl_action_candidate(frame):
     return (len(frame) >= 31 and
             struct.unpack_from('<H', frame)[0] & 0x00fc == ACTION_SUBTYPE and
             frame[24:29] == AWDL_ACTION_PREFIX and frame[30] in (0, 3))
+
+
+def has_complete_awdl_action_header(frame):
+    """Require the full public AWDL action header, without parsing private TLVs."""
+    return (len(frame) >= AWDL_ACTION_HEADER_LENGTH and
+            is_awdl_action_candidate(frame))

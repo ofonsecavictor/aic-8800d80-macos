@@ -33,7 +33,7 @@ class ReceivingWifi(FakeWifi):
 class PassiveCaptureTests(unittest.TestCase):
     def test_counts_only_and_restores_vifs(self):
         header = b'\xd0\x00' + bytes(22)
-        awdl = header + b'\x7f\x00\x17\xf2\x08\x10\x03'
+        awdl = header + b'\x7f\x00\x17\xf2\x08\x10\x03' + bytes(9)
         other = header + b'\x04'
         device = ReceivingWifi([record(awdl) + record(other), b'not a record'])
         result = probe_action_rx.capture(device)
@@ -42,6 +42,7 @@ class PassiveCaptureTests(unittest.TestCase):
         self.assertEqual(first['rx_batches'], 2)
         self.assertEqual(first['action_frames'], 2)
         self.assertEqual(first['awdl_candidates'], 1)
+        self.assertEqual(first['awdl_complete_headers'], 1)
         self.assertEqual(first['awdl_vif_indices'], {'1': 1})
         self.assertEqual(first['station_vif_index'], 0)
         self.assertEqual(first['p2p_vif_index'], 1)

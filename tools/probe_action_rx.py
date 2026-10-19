@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 import sys
 
-from management import (action_frames, is_awdl_action_candidate,
+from management import (action_frames, has_complete_awdl_action_header,
+                        is_awdl_action_candidate,
                         other_bssid_filter_request)
 from probe_roc import probe
 
@@ -15,6 +16,7 @@ def capture(device, use_filter=False):
     channels = []
     for channel, frequency in CHANNELS:
         counts = {'rx_batches': 0, 'action_frames': 0, 'awdl_candidates': 0,
+                  'awdl_complete_headers': 0,
                   'awdl_vif_indices': {}, 'malformed_batches': 0}
 
         def observe(data):
@@ -24,6 +26,8 @@ def capture(device, use_filter=False):
                     counts['action_frames'] += 1
                     if is_awdl_action_candidate(frame):
                         counts['awdl_candidates'] += 1
+                        if has_complete_awdl_action_header(frame):
+                            counts['awdl_complete_headers'] += 1
                         key = str(vif_index)
                         counts['awdl_vif_indices'][key] = (
                             counts['awdl_vif_indices'].get(key, 0) + 1)

@@ -1,6 +1,7 @@
 import unittest
 
-from management import (action_frames, is_awdl_action_candidate,
+from management import (action_frames, has_complete_awdl_action_header,
+                        is_awdl_action_candidate,
                         CONFIG_MONITOR_REQUEST_ID, CONFIG_MONITOR_CONFIRMATION_ID,
                         SET_FILTER_REQUEST_ID, other_bssid_filter_request,
                         configure_monitor_request, parse_monitor_confirmation,
@@ -26,6 +27,16 @@ class ActionFrameTests(unittest.TestCase):
         self.assertFalse(is_awdl_action_candidate(candidate[:28] + b'\x09' + candidate[29:]))
         self.assertFalse(is_awdl_action_candidate(header + b'\x7f\x00\x17\xf2\x08\x10\x02'))
         self.assertFalse(is_awdl_action_candidate(b'\x08' + candidate[1:]))
+
+    def test_complete_awdl_header_requires_all_public_fixed_fields(self):
+        header = b'\xd0\x00' + bytes(22)
+        short = header + b'\x7f\x00\x17\xf2\x08\x10\x03'
+        complete = short + bytes(9)
+        self.assertTrue(is_awdl_action_candidate(short))
+        self.assertFalse(has_complete_awdl_action_header(short))
+        self.assertFalse(has_complete_awdl_action_header(complete[:-1]))
+        self.assertTrue(has_complete_awdl_action_header(complete))
+        self.assertFalse(has_complete_awdl_action_header(b'\x08' + complete[1:]))
 
     def test_extracts_only_action_frames_with_vif(self):
         action = b'\xd0\x00' + bytes(22) + b'\x7f\x00\x17\xf2'
