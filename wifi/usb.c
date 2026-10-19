@@ -46,7 +46,7 @@ uint32_t wifi_write(Wifi *w,const void *data,uint32_t length){
  /* Reference-derived FullMAC messages; never resets the USB device. */
  unsigned expected=0xffff;
  switch(id){case 0:case 4:expected=0;break;case 2:expected=72;break;
- case 6:expected=10;break;case 8:expected=1;break;case 0x65:expected=16;break;case 0x69:expected=24;break;
+ case 6:expected=10;break;case 8:expected=1;break;case 14:expected=4;break;case 0x65:expected=16;break;case 0x69:expected=24;break;
  case 0x73:case 0x7b:expected=4;break;case 0x77:expected=95;break;
  case 70:expected=20;break; /* MM_REMAIN_ON_CHANNEL_REQ, research branch only. */
  case 0x1411:expected=14;break; /* ME_CONFIG_MONITOR_REQ, research branch only. */

@@ -2,19 +2,21 @@
 """Standalone physical ROC probe, run only via probe_roc.sh with approval."""
 import json
 from pathlib import Path
+import queue
 import struct
 import sys
 import time
 
 from management import (REMAIN_ON_CHANNEL_REQUEST_ID,
                         REMAIN_ON_CHANNEL_CONFIRMATION_ID,
+                        SET_FILTER_REQUEST_ID,
                         cancel_remain_on_channel_request,
                         parse_remain_on_channel_confirmation,
                         remain_on_channel_request)
 from probe_p2p_vif import add_interface, p2p_mac
 
 
-def probe(device, on_rx=None, duration_ms=200, frequency=5220):
+def probe(device, on_rx=None, duration_ms=200, frequency=5220, rx_filter=None):
     info = device.identity()
     if info['lmac_version'] != '06090101':
         raise RuntimeError('Untested firmware revision')
@@ -36,6 +38,24 @@ def probe(device, on_rx=None, duration_ms=200, frequency=5220):
         created.append(peer)
         if station == peer or station >= info['max_interfaces'] or peer >= info['max_interfaces']:
             raise RuntimeError('Firmware returned invalid or duplicate VIF indices')
+        if rx_filter is not None:
+            if not isinstance(rx_filter, bytes) or len(rx_filter) != 4:
+                raise ValueError('Invalid RX filter payload')
+            device.request(SET_FILTER_REQUEST_ID, rx_filter)
+
+        def drain_rx(observer, limit=128):
+            for _ in range(limit):
+                try:
+                    data = device.rx.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(data, Exception):
+                    raise data
+                if data and observer is not None:
+                    observer(data)
+
+        if on_rx is not None:
+            drain_rx(None)  # Discard setup traffic before entering ROC.
 
         payload = remain_on_channel_request(peer, frequency, duration_ms, 0)
         # If the confirmation is lost, the firmware may still have entered ROC.
@@ -50,9 +70,7 @@ def probe(device, on_rx=None, duration_ms=200, frequency=5220):
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 if on_rx is not None:
-                    data = device.data_read(timeout=0)
-                    if data:
-                        on_rx(data)
+                    drain_rx(on_rx, limit=8)
                 events = list(device.events)
                 device.events.clear()
                 if not events:
@@ -65,11 +83,7 @@ def probe(device, on_rx=None, duration_ms=200, frequency=5220):
                 if expired:
                     break
             if on_rx is not None:
-                while True:
-                    data = device.data_read(timeout=0)
-                    if not data:
-                        break
-                    on_rx(data)
+                drain_rx(on_rx)
         return {'station_vif_created': True, 'p2p_vif_created': True,
                 'roc_accepted': accepted, 'roc_expired_indication': expired,
                 'airdrop_proven': False}

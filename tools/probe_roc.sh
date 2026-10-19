@@ -3,8 +3,8 @@
 # replaces installed source, library, package, kext, or EFI files.
 set -eu
 
-if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != '--capture' ] && [ "$1" != '--monitor' ]; }; then
-    echo 'Uso: sudo sh tools/probe_roc.sh [--capture|--monitor]' >&2
+if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != '--capture' ] && [ "$1" != '--capture-filtered' ] && [ "$1" != '--monitor' ]; }; then
+    echo 'Uso: sudo sh tools/probe_roc.sh [--capture|--capture-filtered|--monitor]' >&2
     exit 2
 fi
 
@@ -64,6 +64,8 @@ stopped=1
 /bin/sleep 2
 if [ "$#" -eq 1 ] && [ "$1" = '--monitor' ]; then
     PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_monitor.py" "$stage"
+elif [ "$#" -eq 1 ] && [ "$1" = '--capture-filtered' ]; then
+    PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_action_rx.py" "$stage" --filtered
 elif [ "$#" -eq 1 ]; then
     PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_action_rx.py" "$stage"
 else

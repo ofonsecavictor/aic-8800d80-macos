@@ -14,6 +14,7 @@ ACTION_SUBTYPE = 0x00d0
 AWDL_ACTION_PREFIX = b'\x7f\x00\x17\xf2\x08'
 REMAIN_ON_CHANNEL_REQUEST_ID = 70
 REMAIN_ON_CHANNEL_CONFIRMATION_ID = 71
+SET_FILTER_REQUEST_ID = 14
 CONFIG_MONITOR_REQUEST_ID = 0x1411
 CONFIG_MONITOR_CONFIRMATION_ID = 0x1412
 
@@ -60,6 +61,16 @@ def parse_monitor_confirmation(body, frequency):
             actual != frequency or center1 != frequency or center2 != 0):
         raise ValueError('Monitor channel mismatch')
     return body[0]
+
+
+def other_bssid_filter_request():
+    """Encode the reference driver's passive monitor RX mask for a P2P test.
+
+    Matches rwnx_send_set_filter() with OTHER_BSS, BCN_PRBRESP_PROMISC,
+    PSPOLL and PROBE_REQ flags. It is not a promiscuous data filter.
+    """
+    bits = (28, 26, 24, 18, 17, 15, 13, 10, 9, 8, 7, 4, 3)
+    return struct.pack('<I', sum(1 << bit for bit in bits))
 
 
 def transmit_action_frame(frame, vif, source_mac, confirmation_index):

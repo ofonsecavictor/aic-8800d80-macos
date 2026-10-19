@@ -2,6 +2,7 @@ import unittest
 
 from management import (action_frames, is_awdl_action_candidate,
                         CONFIG_MONITOR_REQUEST_ID, CONFIG_MONITOR_CONFIRMATION_ID,
+                        SET_FILTER_REQUEST_ID, other_bssid_filter_request,
                         configure_monitor_request, parse_monitor_confirmation,
                         remain_on_channel_request,
                         parse_remain_on_channel_confirmation,
@@ -93,6 +94,17 @@ class MonitorConfigurationTests(unittest.TestCase):
                          b'\x01\x00' + payload[:9]):
             with self.subTest(response=response), self.assertRaises(ValueError):
                 parse_monitor_confirmation(response, 5220)
+
+
+class RXFilterTests(unittest.TestCase):
+    def test_uses_reference_management_mask_without_other_data(self):
+        self.assertEqual(SET_FILTER_REQUEST_ID, 14)
+        payload = other_bssid_filter_request()
+        self.assertEqual(payload.hex(), '98a70615')
+        mask = int.from_bytes(payload, 'little')
+        self.assertTrue(mask & (1 << 4))   # OTHER_BSSID
+        self.assertTrue(mask & (1 << 15))  # OTHER_MGMT_FRAMES
+        self.assertFalse(mask & (1 << 29)) # OTHER_DATA_FRAMES
 
 
 class ActionTransmitTests(unittest.TestCase):

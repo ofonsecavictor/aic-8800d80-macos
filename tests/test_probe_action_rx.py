@@ -1,5 +1,6 @@
 from collections import deque
 from pathlib import Path
+import queue
 import sys
 import unittest
 
@@ -18,13 +19,13 @@ def record(frame):
 class ReceivingWifi(FakeWifi):
     def __init__(self, batches):
         super().__init__()
+        self.rx = queue.Queue()
         self.batches = deque(batches)
-
-    def data_read(self, timeout=0):
-        return self.batches.popleft() if self.batches else b''
 
     def request(self, message, payload=b'', confirmation=None):
         if message == 70 and payload[0] == 0:
+            while self.batches:
+                self.rx.put(self.batches.popleft())
             self.events.append((72, b'\x01\x02'))
         return super().request(message, payload, confirmation)
 
@@ -51,6 +52,15 @@ class PassiveCaptureTests(unittest.TestCase):
                          [2437, 5220, 5745])
         self.assertNotIn('mac', result)
         self.assertNotIn('frame', result)
+
+    def test_filtered_capture_sets_mask_only_in_opted_in_runs(self):
+        device = ReceivingWifi([])
+        result = probe_action_rx.capture(device, use_filter=True)
+        self.assertTrue(result['other_bssid_filter'])
+        self.assertEqual([payload.hex() for msg, payload in device.calls if msg == 14],
+                         ['98a70615'] * 3)
+        self.assertEqual([payload for msg, payload in device.calls if msg == 8],
+                         [b'\x01', b'\x00'] * 3)
 
 
 if __name__ == '__main__':
