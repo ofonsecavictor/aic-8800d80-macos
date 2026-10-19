@@ -16,9 +16,10 @@ kernel_headers="$sdk/System/Library/Frameworks/Kernel.framework/Versions/A/Heade
 stage=$(/usr/bin/mktemp -d /private/tmp/aic-native-compile.XXXXXX)
 cleanup() {
     /bin/rm -f "$stage/AICAirPortController.o"
+    /bin/rm -f "$stage/AICAirPortController-headless.o"
     /bin/rm -f "$stage/AICNativeBridgeUserClient.o"
     /bin/rm -f "$stage/AICInfraInterface.o"
-    /bin/rm -f "$stage/AICProbe" "$stage/undefined.txt"
+    /bin/rm -f "$stage/AICProbe" "$stage/AICHeadlessProbe" "$stage/undefined.txt"
     /bin/rm -f "$stage/native_bridge_protocol_test"
     /bin/rm -f "$stage/exports.txt" "$stage/missing.txt"
     /bin/rm -f "$stage/AICNativeProbe.kext/Contents/MacOS/AICNativeProbe"
@@ -45,6 +46,18 @@ echo 'Contrato de estado de rádio: testes locais OK.'
     -I"$1" -I"$2" -I"$kernel_headers" \
     "$repo_dir/native/AICAirPortController.cpp"
 /usr/bin/file "$stage/AICAirPortController.o"
+# Compile the explicitly opt-in lifecycle path as well. The bundled Mach-O
+# below still uses the disabled-by-default object, not this test variant.
+/usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
+    -mkernel -c -o "$stage/AICAirPortController-headless.o" \
+    -Wno-deprecated-declarations -Wno-invalid-offsetof \
+    -Wno-inconsistent-missing-override \
+    -DKERNEL=1 -DAIRPORT_WCL=1 -D__PRIVATE_SPI__=1 -DIO80211FAMILY_V2=1 \
+    -D__IO80211_TARGET=__MAC_15_2 -DAIC_HEADLESS_BRIDGE_PROBE=1 \
+    -include "$1/apple_private_spi.h" \
+    -I"$1" -I"$2" -I"$kernel_headers" \
+    "$repo_dir/native/AICAirPortController.cpp"
+/usr/bin/file "$stage/AICAirPortController-headless.o"
 /usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
     -mkernel -c -o "$stage/AICNativeBridgeUserClient.o" \
     -Wno-deprecated-declarations -Wno-invalid-offsetof \
@@ -72,11 +85,18 @@ echo 'Contrato de estado de rádio: testes locais OK.'
     "$stage/AICInfraInterface.o" \
     "$(dirname "$2")/Library/x86_64/libkmod.a"
 /usr/bin/file "$stage/AICProbe"
+/usr/bin/xcrun ld -kext -arch x86_64 -undefined dynamic_lookup \
+    -o "$stage/AICHeadlessProbe" \
+    "$stage/AICAirPortController-headless.o" "$stage/AICNativeBridgeUserClient.o" \
+    "$stage/AICInfraInterface.o" \
+    "$(dirname "$2")/Library/x86_64/libkmod.a"
+/usr/bin/file "$stage/AICHeadlessProbe"
 
 boot_kc=/System/Library/KernelCollections/BootKernelExtensions.kc
 system_kc=/System/Library/KernelCollections/SystemKernelExtensions.kc
 if [ -f "$boot_kc" ] && [ -f "$system_kc" ]; then
-    /usr/bin/xcrun nm -u "$stage/AICProbe" |
+    { /usr/bin/xcrun nm -u "$stage/AICProbe"
+      /usr/bin/xcrun nm -u "$stage/AICHeadlessProbe"; } |
         /usr/bin/awk 'NF {print $NF}' | /usr/bin/sort -u > "$stage/undefined.txt"
     { /usr/bin/xcrun nm -g "$boot_kc" 2>/dev/null
       /usr/bin/xcrun nm -g "$system_kc" 2>/dev/null; } |

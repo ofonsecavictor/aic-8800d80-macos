@@ -67,9 +67,18 @@ void AICAirPortController::free() {
 }
 
 bool AICAirPortController::start(IOService *provider) {
+    // This is never enabled in the packaged probe. A separate test-EFI build
+    // may start the controller headlessly to validate the user-client ABI.
+    // No IO80211 interface, network route, or USB claim is created here.
+#if defined(AIC_HEADLESS_BRIDGE_PROBE) && AIC_HEADLESS_BRIDGE_PROBE
+    if (!provider || !IO80211Controller::start(provider)) return false;
+    registerService();
+    return true;
+#else
     // Refuse to register a ghost Wi-Fi interface without an AIC radio bridge.
     (void)provider;
     return false;
+#endif
 }
 
 void AICAirPortController::stop(IOService *provider) {
