@@ -56,6 +56,7 @@ class Wifi:
         self.test_ip=False
         self.native_connect=False;self.native_stop=threading.Event()
         self.kernel_session=None;self.kernel_poll=None;self.scan_observer=None;self.control_observer=None
+        self.radio_observer=None
         self.scan_requested=threading.Event();self.active_vif=None
         self.connected_scan=False;self.connected_scan_deadline=0;self.connected_results={}
         self.rx_diagnostics={'records':0,'malformed':0,'ethernet_frames':0,'hardware':{},'ether_types':{}}
@@ -226,6 +227,7 @@ class Wifi:
         vif=None;scanning=False
         try:
             self.initialize_radio()
+            if getattr(self,'radio_observer',None):self.radio_observer(True,None,self.mac)
             self.request(0)
             self.request(2,bytes(64)+struct.pack('<IH2x',300,20))
             # CONFIG_COEX reference rwnx_open: BT on, coexistence NULL CTS on.
@@ -291,6 +293,7 @@ class Wifi:
                     except RuntimeError:pass
                 self.request(8,bytes([vif]))
                 self.request(0) # Reference rwnx_close: reset Wi-Fi MAC after last VIF.
+            if getattr(self,'radio_observer',None):self.radio_observer(False,None,self.mac)
 
     def initialize_radio(self):
         # Linux does RF initialization on USB probe, not each interface open.
@@ -381,6 +384,7 @@ class Wifi:
                     if keys is not None:
                         self.request(0x1404,bytes([station,1]))
                         print('WPA2: MIC validado; chaves CCMP aceitas; porta de dados aberta.',flush=True)
+                        if getattr(self,'radio_observer',None):self.radio_observer(True,target,self.mac)
                         result={'ssid':target['ssid'],'bssid':target['bssid'],'authentication':'WPA2-PSK-CCMP',
                                 'ap_mic_verified':True,'firmware_keys_installed':True,
                                 'session_closed_after_test':True,'macos_network_interface':False}

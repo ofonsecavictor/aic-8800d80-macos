@@ -11,6 +11,7 @@ import threading
 import time
 from wifi import Wifi
 from reports import write_report
+from native_radio_control import NativeRadioPublisher
 
 HERE=Path(__file__).resolve().parent
 SOCKET=Path('/private/tmp/aic-wifi-control.sock')
@@ -37,6 +38,12 @@ def store_credential(ssid,key):
     result=subprocess.run([str(HERE/'aic-wifi-credential'),'--store',ssid],input=key,
         stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=15)
     if result.returncode:raise RuntimeError('Não foi possível guardar a senha do Wi-Fi.')
+
+def optional_radio_bridge():
+    try:return NativeRadioPublisher.open_if_present()
+    except (OSError,RuntimeError) as error:
+        print('AIC: ponte de estado nativo indisponível: '+str(error),flush=True)
+        return None
 
 class Controller:
     def __init__(self):
@@ -188,7 +195,7 @@ def main():
             # A request received during this iteration stays set until the
             # next one. Never clear it just before waiting for selection.
             controller.wake.clear()
-            w=None;key=None;session_stop=threading.Event();controller.session_stop=session_stop
+            w=None;key=None;radio_bridge=None;session_stop=threading.Event();controller.session_stop=session_stop
             try:
                 config=controller.config()
                 if not config.get('enabled',False):
@@ -200,6 +207,8 @@ def main():
                     # Fresh install: expose nearby WPA2 networks before any
                     # credential exists, then sleep until selection/rescan.
                     w=Wifi();w.native_stop=session_stop;controller.wifi=w
+                    radio_bridge=optional_radio_bridge()
+                    if radio_bridge:w.radio_observer=radio_bridge.safe_publish
                     publish_capabilities(w.identity())
                     print('AIC: primeira configuração; buscando redes disponíveis.',flush=True)
                     w.scan()
@@ -209,6 +218,8 @@ def main():
                     continue
                 key=credential(ssid)
                 w=Wifi();w.native_stop=session_stop;w.target_band=config.get('preferred_band')
+                radio_bridge=optional_radio_bridge()
+                if radio_bridge:w.radio_observer=radio_bridge.safe_publish
                 controller.wifi=w
                 publish_capabilities(w.identity())
                 from native_backend import Bridge,Manager,NativeError,NOT_FOUND
@@ -230,8 +241,10 @@ def main():
             finally:
                 key=None;controller.session_stop=None;controller.wifi=None
                 if w:
+                    if radio_bridge:radio_bridge.safe_publish(False,None,w.mac)
                     try:w.close()
                     except OSError:pass
+                if radio_bridge:radio_bridge.close()
             if not stop.is_set() and not session_stop.is_set():
                 controller.wake.wait(3)
     finally:controller.close()
