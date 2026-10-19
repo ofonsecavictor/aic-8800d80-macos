@@ -26,6 +26,7 @@ cleanup() {
     /bin/rm -f "$stage/AICInfraInterface.o"
     /bin/rm -f "$stage/AICProbe" "$stage/AICHeadlessProbe" "$stage/undefined.txt"
     /bin/rm -f "$stage/native_bridge_protocol_test"
+    /bin/rm -f "$stage/native_scan_request_test"
     /bin/rm -f "$stage/exports.txt" "$stage/missing.txt"
     /bin/rm -f "$stage/diagnostics.txt"
     /bin/rm -f "$stage/AICNativeProbe.kext/Contents/MacOS/AICNativeProbe"
@@ -42,6 +43,11 @@ trap cleanup EXIT
     "$repo_dir/tests/native_bridge_protocol_test.cpp"
 "$stage/native_bridge_protocol_test"
 echo 'Contrato de estado e comando de energia: testes locais OK.'
+/usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
+    -o "$stage/native_scan_request_test" \
+    "$repo_dir/tests/native_scan_request_test.cpp"
+"$stage/native_scan_request_test"
+echo 'Decodificador WCL de varredura: testes locais OK.'
 
 /usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
     -mkernel -c -o "$stage/AICAirPortController.o" \

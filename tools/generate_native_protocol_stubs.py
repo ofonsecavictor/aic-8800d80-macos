@@ -12,6 +12,7 @@ import re
 
 METHOD = re.compile(r"^\s*virtual IOReturn (\w+)\(([^()]*)\) = 0;\s*$")
 EXPECTED_METHODS = 190
+IMPLEMENTED_SEPARATELY = {"setWCL_SCAN_REQ"}
 
 
 def generate(header: Path) -> str:
@@ -27,6 +28,8 @@ def generate(header: Path) -> str:
         "// Fail closed: these callbacks are not a functional Wi-Fi/AWDL implementation.",
     ]
     for name, argument in methods:
+        if name in IMPLEMENTED_SEPARATELY:
+            continue
         lines.append(
             f"    IOReturn {name}({argument}) override {{ return kIOReturnUnsupported; }}"
         )

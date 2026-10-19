@@ -1,4 +1,5 @@
 #include "AICInfraInterface.h"
+#include "AICWCLScanRequest.h"
 
 OSDefineMetaClassAndStructors(AICInfraInterface, IO80211InfraProtocol)
 
@@ -20,5 +21,14 @@ IOReturn AICInfraInterface::getHardwareAddress(ether_addr *address) {
 
 IOReturn AICInfraInterface::setMacAddress(ether_addr &) {
     // The user-space service owns the USB radio and its firmware MAC address.
+    return kIOReturnUnsupported;
+}
+
+IOReturn AICInfraInterface::setWCL_SCAN_REQ(apple80211ScanRequest *request) {
+    AICWCLScanRequest decoded = {};
+    if (!AICDecodeWCLScanRequest(request, kAICWCLScanRequestSize, decoded))
+        return kIOReturnBadArgument;
+    // Do not return success until the service can execute this exact request
+    // and publish result/complete messages back to macOS.
     return kIOReturnUnsupported;
 }

@@ -12,6 +12,7 @@ public:
     bool initForAIC(IOService *provider, const uint8_t *mac);
     IOReturn getHardwareAddress(ether_addr *address) override;
     IOReturn setMacAddress(ether_addr &address) override;
+    IOReturn setWCL_SCAN_REQ(apple80211ScanRequest *request) override;
 
 #include "AICInfraProtocolStubs.inc"
 
