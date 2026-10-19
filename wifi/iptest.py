@@ -96,7 +96,7 @@ def arp_reply(frame,mac,address,gateway):
     if frame[6:12]!=frame[22:28] or frame[22]&1 or not any(frame[22:28]):return None
     return frame[22:28]
 
-def test_link(send,receive,mac,service_eapol,keep_lease=False):
+def test_link(send,receive,mac,service_eapol,keep_lease=False,on_lease=None):
     xid=secrets.randbits(32);offer=None;lease=None;stage='discover';tries=0
     deadline=time.monotonic()+30;next_send=0;handed_off=False
     try:
@@ -141,6 +141,8 @@ def test_link(send,receive,mac,service_eapol,keep_lease=False):
             result['gateway_arp_reply']=bool(found)
             if found:result['gateway_mac']=found.hex(':')
             print('ARP do gateway: '+('recebido' if found else 'sem resposta'),flush=True)
+        if on_lease is not None:
+            on_lease(lease,result,send,receive,service_eapol)
         if keep_lease:
             result['_lease']=lease;handed_off=True
         return result

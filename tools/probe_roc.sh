@@ -3,8 +3,8 @@
 # replaces installed source, library, package, kext, or EFI files.
 set -eu
 
-if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != '--capture' ] && [ "$1" != '--capture-filtered' ] && [ "$1" != '--monitor' ] && [ "$1" != '--tx-check' ] && [ "$1" != '--concurrent' ]; }; then
-    echo 'Uso: sudo sh tools/probe_roc.sh [--capture|--capture-filtered|--monitor|--tx-check|--concurrent]' >&2
+if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != '--capture' ] && [ "$1" != '--capture-filtered' ] && [ "$1" != '--monitor' ] && [ "$1" != '--tx-check' ] && [ "$1" != '--concurrent' ] && [ "$1" != '--concurrent-ip' ]; }; then
+    echo 'Uso: sudo sh tools/probe_roc.sh [--capture|--capture-filtered|--monitor|--tx-check|--concurrent|--concurrent-ip]' >&2
     exit 2
 fi
 
@@ -26,7 +26,8 @@ cleanup() {
     case "$stage" in
         /private/tmp/aic-roc.*)
             /bin/rm -f "$stage/libaicwifi.dylib" "$stage/power-default.bin" "$stage/radio-state.json" \
-                "$stage/redes-disponiveis.json" "$stage/resultado-autenticacao.json"
+                "$stage/redes-disponiveis.json" "$stage/resultado-autenticacao.json" \
+                "$stage/resultado-ip.json"
             /bin/rmdir "$stage" 2>/dev/null || true
             ;;
     esac
@@ -56,7 +57,7 @@ stage=$(/usr/bin/mktemp -d /private/tmp/aic-roc.XXXXXX)
 if [ -f "$support/radio-state.json" ]; then
     /bin/cp "$support/radio-state.json" "$stage/radio-state.json"
 fi
-if [ "$#" -eq 1 ] && [ "$1" = '--concurrent' ] && [ -f "$support/redes-disponiveis.json" ]; then
+if [ "$#" -eq 1 ] && { [ "$1" = '--concurrent' ] || [ "$1" = '--concurrent-ip' ]; } && [ -f "$support/redes-disponiveis.json" ]; then
     /bin/cp "$support/redes-disponiveis.json" "$stage/redes-disponiveis.json"
 fi
 /usr/bin/clang -dynamiclib -O2 -framework IOKit -framework CoreFoundation \
@@ -72,6 +73,8 @@ elif [ "$#" -eq 1 ] && [ "$1" = '--tx-check' ]; then
     PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_action_tx.py" "$stage"
 elif [ "$#" -eq 1 ] && [ "$1" = '--concurrent' ]; then
     PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_concurrent_roc.py" "$stage"
+elif [ "$#" -eq 1 ] && [ "$1" = '--concurrent-ip' ]; then
+    PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_concurrent_roc.py" "$stage" --ip
 elif [ "$#" -eq 1 ] && [ "$1" = '--capture-filtered' ]; then
     PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_action_rx.py" "$stage" --filtered
 elif [ "$#" -eq 1 ]; then

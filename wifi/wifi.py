@@ -56,7 +56,7 @@ class Wifi:
         self.test_ip=False
         self.native_connect=False;self.native_stop=threading.Event()
         self.kernel_session=None;self.kernel_poll=None;self.scan_observer=None;self.control_observer=None
-        self.radio_observer=None;self.association_observer=None
+        self.radio_observer=None;self.association_observer=None;self.lease_observer=None
         self.scan_requested=threading.Event();self.active_vif=None
         self.connected_scan=False;self.connected_scan_deadline=0;self.connected_results={}
         self.rx_diagnostics={'records':0,'malformed':0,'ethernet_frames':0,'hardware':{},'ether_types':{}}
@@ -402,9 +402,14 @@ class Wifi:
                                 result['macos_network_interface']=True
                                 return result
                             from iptest import test_link
+                            lease_callback=None
+                            if getattr(self,'lease_observer',None):
+                                lease_callback=lambda lease,ip_result,send,receive,eapol:self.lease_observer(
+                                    vif,station,lease,ip_result,send,receive,eapol)
                             result['ip_test']=test_link(
                                 lambda frame:self.data_write(frame,vif,station,'dados',quiet=True),
                                 lambda:list(ethernet_frames(self.data_read())),self.mac,service_eapol,
+                                on_lease=lease_callback,
                                 **({'keep_lease':True} if self.native_connect else {}))
                             if self.native_connect:
                                 from native import connect

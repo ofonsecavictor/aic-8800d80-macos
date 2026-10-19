@@ -14,6 +14,7 @@ from management import (REMAIN_ON_CHANNEL_REQUEST_ID,
                         parse_remain_on_channel_confirmation,
                         remain_on_channel_request)
 from probe_p2p_vif import add_interface, p2p_mac
+from iptest import arp_reply, arp_request
 
 SUPPORT = Path('/Library/Application Support/AIC88M80Driver/wifi')
 
@@ -85,7 +86,38 @@ def probe_connected_roc(device, sta_vif, frequency=2437):
             print(detail, file=sys.stderr)
 
 
-def run(stage):
+def probe_ip_recovery(device, sta_vif, lease, ip_result, send, receive, service_eapol):
+    """Check gateway ARP before and after ROC on the same diagnostic lease."""
+    if not ip_result.get('dhcp_ack') or not ip_result.get('gateway_arp_reply'):
+        raise RuntimeError('No verified DHCP/gateway path before ROC')
+    gateway = lease.get('routers', b'')[:4]
+    if len(gateway) != 4:
+        raise RuntimeError('No DHCP gateway for ROC recovery test')
+    result = probe_connected_roc(device, sta_vif)
+    result['dhcp_ack_before_roc'] = True
+    result['gateway_arp_before_roc'] = True
+    result['gateway_arp_after_roc'] = False
+    for _ in range(2):
+        send(arp_request(device.mac, lease['address'], gateway))
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            for frame in receive():
+                if frame[12:14] == b'\x88\x8e':
+                    service_eapol(frame)
+                elif arp_reply(frame, device.mac, lease['address'], gateway):
+                    result['gateway_arp_after_roc'] = True
+                    break
+            if result['gateway_arp_after_roc']:
+                break
+        if result['gateway_arp_after_roc']:
+            break
+    result['sta_ip_path_recovered'] = bool(
+        result['roc_while_sta_authenticated_accepted'] and
+        result['roc_expired_indication'] and result['gateway_arp_after_roc'])
+    return result
+
+
+def run(stage, verify_ip=False):
     import wifi as wifi_module
     config = json.loads((SUPPORT / 'profile.json').read_text())
     ssid = config.get('ssid')
@@ -105,13 +137,22 @@ def run(stage):
         device.identity()
         device.target_band = config.get('preferred_band')
         device.research_probe = True
+        device.test_ip = verify_ip
 
         def on_association(vif, _station, _target):
             nonlocal result
-            result = probe_connected_roc(device, vif)
+            if not verify_ip:
+                result = probe_connected_roc(device, vif)
 
         device.association_observer = on_association
-        print('Autenticando STA e testando ROC por 200 ms; sem quadros P2P de diagnóstico...', flush=True)
+        if verify_ip:
+            def on_lease(vif, _station, lease, ip_result, send, receive, service_eapol):
+                nonlocal result
+                result = probe_ip_recovery(device, vif, lease, ip_result,
+                                           send, receive, service_eapol)
+            device.lease_observer = on_lease
+        print('Autenticando STA e testando '+('DHCP/ARP + ROC' if verify_ip else 'ROC')+
+              '; sem quadros P2P de diagnóstico...', flush=True)
         # Wifi logs AP identifiers; discard them and print only bounded findings.
         with contextlib.redirect_stdout(io.StringIO()):
             device.scan(ssid, key)
@@ -126,6 +167,6 @@ def run(stage):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        raise SystemExit('Usage: probe_concurrent_roc.py STAGE')
-    run(Path(sys.argv[1]).resolve())
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != '--ip'):
+        raise SystemExit('Usage: probe_concurrent_roc.py STAGE [--ip]')
+    run(Path(sys.argv[1]).resolve(), verify_ip=len(sys.argv) == 3)
