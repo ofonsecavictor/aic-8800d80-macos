@@ -23,6 +23,8 @@ Use `python3 tools/airdrop_preflight.py` para verificar apenas os sinais locais 
 
 Para consultar o firmware **instalado agora**, execute `sudo sh tools/probe_firmware_identity.sh` no Terminal a partir da raiz deste repositório. Isso interrompe o Wi-Fi AIC por alguns segundos e tenta religar o serviço mesmo em caso de falha. A saída útil contém somente `lmac_version`, `features`, `max_stations` e `max_interfaces`. Não execute durante trabalho que dependa da conexão; se a reconexão falhar, reinicie o Mac com sua EFI de recuperação disponível.
 
+**Próximo teste manual (ainda não executado):** `sudo sh tools/probe_p2p_vif.sh` cria uma interface STA e uma P2P no firmware, confere índices distintos, remove ambas e religa o serviço AIC. Interrompe a conexão durante o teste. Não transmite quadros P2P, não testa permanência em canal ou simultaneidade de tráfego e não habilita AirDrop. Execute apenas quando puder tolerar uma breve queda de rede, com a EFI de recuperação disponível; compartilhe somente os campos booleanos da saída, não logs de sistema que possam conter identificadores.
+
 **Regra de segurança:** não instalar um kext experimental na EFI principal nem desativar proteções do macOS para “forçar” AirDrop. Usar uma EFI de teste com backup e possibilidade de rollback.
 
 ## English
@@ -47,5 +49,7 @@ Engineering gates, in order:
 Run `python3 tools/airdrop_preflight.py` to check local interface and USB-enumeration signals only. Its output excludes SSIDs, MAC addresses, and passwords. `airdrop_proven` remains false until a real transfer test exists; this script does not enable AirDrop.
 
 To query the firmware **currently installed**, run `sudo sh tools/probe_firmware_identity.sh` in Terminal from this repository's root. This briefly interrupts AIC Wi-Fi and attempts to restart its service even if the query fails. The useful output contains only `lmac_version`, `features`, `max_stations`, and `max_interfaces`. Do not run it during connection-critical work; if reconnection fails, restart the Mac with your recovery EFI available.
+
+**Next manual test (not yet run):** `sudo sh tools/probe_p2p_vif.sh` creates one STA and one P2P firmware interface, checks that their indices differ, removes both, and restarts the AIC service. It interrupts connectivity during the test. It does not transmit P2P frames, test remain-on-channel or concurrent traffic, or enable AirDrop. Run only when a brief network interruption is acceptable and the recovery EFI is available; share only the boolean output fields, not system logs that might contain identifiers.
 
 **Safety rule:** do not install an experimental kext into the primary EFI or disable macOS protections to “force” AirDrop. Use a test EFI with backup and rollback available.
