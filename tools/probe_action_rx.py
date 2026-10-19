@@ -15,15 +15,18 @@ def capture(device, use_filter=False):
     channels = []
     for channel, frequency in CHANNELS:
         counts = {'rx_batches': 0, 'action_frames': 0, 'awdl_candidates': 0,
-                  'malformed_batches': 0}
+                  'awdl_vif_indices': {}, 'malformed_batches': 0}
 
         def observe(data):
             counts['rx_batches'] += 1
             try:
-                for _, frame in action_frames(data):
+                for vif_index, frame in action_frames(data):
                     counts['action_frames'] += 1
                     if is_awdl_action_candidate(frame):
                         counts['awdl_candidates'] += 1
+                        key = str(vif_index)
+                        counts['awdl_vif_indices'][key] = (
+                            counts['awdl_vif_indices'].get(key, 0) + 1)
             except ValueError:
                 counts['malformed_batches'] += 1
 

@@ -85,6 +85,7 @@ def probe(device, on_rx=None, duration_ms=200, frequency=5220, rx_filter=None):
             if on_rx is not None:
                 drain_rx(on_rx)
         return {'station_vif_created': True, 'p2p_vif_created': True,
+                'station_vif_index': station, 'p2p_vif_index': peer,
                 'roc_accepted': accepted, 'roc_expired_indication': expired,
                 'airdrop_proven': False}
     finally:
