@@ -40,6 +40,30 @@ def cancel_remain_on_channel_request():
     return bytes([1]) + bytes(19)
 
 
+def transmit_action_frame(frame, vif, source_mac, confirmation_index):
+    """Encode one unprotected 802.11 action frame for experimental AIC USB TX.
+
+    This returns bytes only; it never calls the USB transport. The caller must
+    own the P2P VIF and arrange a channel and an explicit test peer.
+    """
+    if not isinstance(frame, bytes) or not 25 <= len(frame) <= 512:
+        raise ValueError('Invalid action frame length')
+    if not 0 <= vif < 4 or not 0 <= confirmation_index < (1 << 31):
+        raise ValueError('Invalid VIF or confirmation index')
+    if len(source_mac) != 6 or source_mac[0] & 1 or frame[10:16] != source_mac:
+        raise ValueError('Action frame source does not match VIF MAC')
+    if not any(frame[4:10]):
+        raise ValueError('Invalid action frame destination')
+    frame_control = struct.unpack_from('<H', frame)[0]
+    if frame_control & 0x00ff != ACTION_SUBTYPE or frame_control & 0x4000:
+        raise ValueError('Only unprotected 802.11 action frames are supported')
+    descriptor = (struct.pack('<HHI', len(frame), 0, 0x80000000 | confirmation_index)
+                  + bytes(14) + struct.pack('<4BH', 3, 0xff, vif, 0xff, 8))
+    body = descriptor + frame
+    body += bytes((-len(body)) % 4)
+    return struct.pack('<HBB', 4 + len(body), 1, 0) + body
+
+
 def action_frames(data):
     """Yield (vif_index, raw_80211_frame) for valid action-frame records.
 

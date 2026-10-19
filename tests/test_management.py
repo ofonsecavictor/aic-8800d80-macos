@@ -2,7 +2,8 @@ import unittest
 
 from management import (action_frames, remain_on_channel_request,
                         parse_remain_on_channel_confirmation,
-                        cancel_remain_on_channel_request)
+                        cancel_remain_on_channel_request,
+                        transmit_action_frame)
 
 
 def record(frame, flags):
@@ -58,6 +59,36 @@ class RemainOnChannelTests(unittest.TestCase):
 
     def test_cancel_request_matches_zero_initialized_linux_structure(self):
         self.assertEqual(cancel_remain_on_channel_request(), b'\x01' + bytes(19))
+
+
+class ActionTransmitTests(unittest.TestCase):
+    def setUp(self):
+        self.source = bytes.fromhex('021122334455')
+        self.frame = (b'\xd0\x00' + bytes(2) + bytes.fromhex('ffffffffffff')
+                      + self.source + bytes.fromhex('ffffffffffff')
+                      + bytes(2) + b'\x04')
+
+    def test_encodes_confirmed_management_descriptor(self):
+        packet = transmit_action_frame(self.frame, 1, self.source, 7)
+        self.assertEqual(int.from_bytes(packet[:2], 'little'), len(packet))
+        self.assertEqual(packet[2:4], b'\x01\x00')
+        self.assertEqual(int.from_bytes(packet[4:6], 'little'), len(self.frame))
+        self.assertEqual(int.from_bytes(packet[8:12], 'little'), 0x80000007)
+        self.assertEqual(packet[12:26], bytes(14))
+        self.assertEqual(packet[26:32], b'\x03\xff\x01\xff\x08\x00')
+        self.assertEqual(packet[32:32 + len(self.frame)], self.frame)
+        self.assertEqual(packet[32 + len(self.frame):], bytes((-len(self.frame)) % 4))
+
+    def test_rejects_non_action_or_spoofed_source(self):
+        invalid = (self.frame[:10] + bytes.fromhex('021122334456') + self.frame[16:])
+        with self.assertRaises(ValueError):
+            transmit_action_frame(invalid, 1, self.source, 0)
+        with self.assertRaises(ValueError):
+            transmit_action_frame(b'\x08' + self.frame[1:], 1, self.source, 0)
+        with self.assertRaises(ValueError):
+            transmit_action_frame(self.frame, 4, self.source, 0)
+        with self.assertRaises(ValueError):
+            transmit_action_frame(self.frame, 1, self.source, 1 << 31)
 
 
 if __name__ == '__main__':
