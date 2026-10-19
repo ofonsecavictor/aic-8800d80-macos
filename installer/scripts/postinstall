@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+exec >> /Library/Logs/AIC88M80Installer.log 2>&1
+echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') iniciando instalação AIC 1.1.2"
+support='/Library/Application Support/AIC88M80Driver'
+profile="$support/wifi/profile.json"
+app='/Applications/AIC Wi-Fi.app'
+agent='/Library/LaunchAgents/local.victor.AICWiFiMenu.plist'
+daemon='/Library/LaunchDaemons/local.victor.AIC88M80WiFi.plist'
+if [ ! -x "$app/Contents/MacOS/AIC Wi-Fi" ]; then
+    echo "Erro: aplicativo AIC Wi-Fi não foi instalado em /Applications." >&2
+    exit 1
+fi
+if [ ! -e "$profile" ]; then
+    /bin/cat > "$profile" <<'JSON'
+{"ssid":"","enabled":true,"native_enabled":false,"credential":"System Keychain"}
+JSON
+fi
+/usr/sbin/chown -R root:wheel "$support"
+/bin/chmod 755 "$support" "$support/wifi" "$support/firmware-loader" "$support/firmware"
+/bin/chmod 755 "$support/Installer"
+/bin/chmod 600 "$profile"
+"$support/Installer/efi-installer/aic-efi-installer"
+/usr/bin/python3 - <<'PYCONFIG'
+import json,os
+from pathlib import Path
+support=Path('/Library/Application Support/AIC88M80Driver')
+p=support/'wifi/profile.json'
+c=json.loads(p.read_text());c['native_enabled']=False
+p.write_text(json.dumps(c));os.chmod(p,0o600)
+p=support/'last-install.json'
+if p.exists():
+    c=json.loads(p.read_text());c['version']='1.1.2';p.write_text(json.dumps(c,indent=2)+'\n');os.chmod(p,0o600)
+PYCONFIG
+# Start the service and menu in the current session, without waiting for a reboot.
+if [ -f "$daemon" ]; then
+    /bin/launchctl bootout system "$daemon" >/dev/null 2>&1 || true
+    if ! /bin/launchctl bootstrap system "$daemon"; then
+        echo 'Aviso: serviço Wi-Fi não iniciou agora; será iniciado após reiniciar.'
+    fi
+fi
+console_user=$(/usr/bin/stat -f %Su /dev/console)
+console_uid=$(/usr/bin/stat -f %u /dev/console)
+if [ "$console_uid" -ge 500 ] && [ "$console_user" != loginwindow ]; then
+    /bin/launchctl bootout "gui/$console_uid" "$agent" >/dev/null 2>&1 || true
+    /usr/bin/pkill -u "$console_uid" -f '/AIC Wi-Fi.app/Contents/MacOS/AIC Wi-Fi$' >/dev/null 2>&1 || true
+    if ! /bin/launchctl bootstrap "gui/$console_uid" "$agent"; then
+        echo 'Aviso: LaunchAgent não iniciou; tentando abrir o app diretamente.'
+        if ! /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/open -a "$app"; then
+            echo 'Aviso: não foi possível abrir o app nesta sessão; ele abrirá no próximo login.'
+        fi
+    fi
+    if ! /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/osascript <<'APPLESCRIPT'
+tell application "System Events"
+    if not (exists login item "AIC Wi-Fi") then
+        make new login item at end with properties {name:"AIC Wi-Fi", path:"/Applications/AIC Wi-Fi.app", hidden:true}
+    end if
+end tell
+APPLESCRIPT
+    then
+        echo "Aviso: não foi possível cadastrar o item de login; o LaunchAgent permanece configurado."
+    fi
+fi
+echo 'Instalação concluída; menu AIC iniciado na sessão atual. Reinicialização necessária para ativar as alterações da EFI.'
+exit 0

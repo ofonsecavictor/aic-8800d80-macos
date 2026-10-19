@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+# This package targets the tested machine and requires its installed Python.
+if ! /usr/bin/python3 -c 'import ctypes,ssl,socket,threading,json,fcntl' >/dev/null 2>&1; then
+    echo 'O Python 3 das ferramentas de desenvolvimento do macOS precisa estar instalado.' >&2
+    exit 1
+fi

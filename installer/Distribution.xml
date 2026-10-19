@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+  <title>AIC 8800D80 Wi-Fi e Bluetooth</title>
+  <readme file="LEIA-ME.txt"/>
+  <organization>local.victor</organization>
+  <domains enable_localSystem="true" enable_anywhere="false" enable_currentUserHome="false"/>
+  <options customize="never" require-scripts="true" hostArchitectures="x86_64"/>
+  <installation-check script="checkCompatibility()"/>
+  <script><![CDATA[
+    function checkCompatibility() {
+      if (system.version.ProductVersion.indexOf('15.') !== 0) {
+        my.result.title='macOS incompatível';
+        my.result.message='Este instalador foi validado somente no macOS 15 Sequoia em Hackintosh Intel.';
+        return false;
+      }
+      return true;
+    }
+  ]]></script>
+  <choices-outline><line choice="default"><line choice="aic"/></line></choices-outline>
+  <choice id="default"/>
+  <choice id="aic" visible="false"><pkg-ref id="local.victor.AIC8800D80"/></choice>
+  <pkg-ref id="local.victor.AIC8800D80" version="1.1.2" onConclusion="RequireRestart">AIC8800D80-component.pkg</pkg-ref>
+</installer-gui-script>

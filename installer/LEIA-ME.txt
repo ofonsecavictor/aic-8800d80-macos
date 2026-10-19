@@ -1,0 +1,25 @@
+AIC 8800D80 Wi-Fi e Bluetooth — versão 1.1.2
+
+Instalação completa em um pacote, direcionada ao Hackintosh Intel com macOS 15
+Sequoia e dongle USB AIC 8800D80 (a69c:8d81). Não foi validada em outros Macs
+ou adaptadores. Requer autorização de administrador e reinicialização. O
+instalador faz backup da EFI OpenCore antes de atualizá-la. O pacote não tem
+assinatura Developer ID.
+
+Primeiro uso:
+1. Instale o pacote. O app AIC Wi-Fi é instalado em Aplicativos e abre
+   automaticamente na barra de menus, sem precisar procurá-lo ou abri-lo.
+2. Reinicie o Mac quando o instalador solicitar e conecte o dongle. O app
+   voltará a abrir no login e a busca de redes começará automaticamente.
+3. Escolha uma rede WPA2 e informe sua senha. A senha é salva no Chaves do
+   Sistema; o serviço conecta e tentará reconectar automaticamente no futuro.
+
+Depois de configurado, o carregador do dongle e o serviço Wi-Fi iniciam com o
+macOS, sem precisar abrir manualmente o app. O menu inicia na sessão do usuário.
+Uma rede aberta, WPA3-only ou um dongle diferente não são suportados nesta
+versão. A busca completa fica pausada durante uma conexão ativa para evitar
+travamento do firmware USB; a lista existente continua visível.
+
+Esta versão integra as correções do menu 1.0.10. Redes e senhas já configuradas
+são preservadas durante a atualização. O pacote foi testado em uma atualização
+neste Mac; o primeiro uso após reiniciar ainda deve ser confirmado com o dongle.
