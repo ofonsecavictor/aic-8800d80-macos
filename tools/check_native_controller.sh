@@ -2,10 +2,12 @@
 # Offline build/link/symbol probe. It never installs or loads a kext.
 set -eu
 
-if [ "$#" -ne 2 ] || [ ! -f "$1/macOS15/IO80211ControllerV2.h" ] ||
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ] ||
+    { [ "$#" -eq 3 ] && [ "$3" != '--diagnose' ]; } ||
+    [ ! -f "$1/macOS15/IO80211ControllerV2.h" ] ||
     [ ! -f "$1/apple_private_spi.h" ] || [ ! -f "$2/IOKit/IOService.h" ] ||
     [ ! -f "$(dirname "$2")/Library/x86_64/libkmod.a" ]; then
-    echo 'Uso: sh tools/check_native_controller.sh /caminho/itlwm-Sequoia/include/Airport /caminho/MacKernelSDK/Headers' >&2
+    echo 'Uso: sh tools/check_native_controller.sh /caminho/itlwm-Sequoia/include/Airport /caminho/MacKernelSDK/Headers [--diagnose]' >&2
     exit 2
 fi
 
@@ -22,6 +24,7 @@ cleanup() {
     /bin/rm -f "$stage/AICProbe" "$stage/AICHeadlessProbe" "$stage/undefined.txt"
     /bin/rm -f "$stage/native_bridge_protocol_test"
     /bin/rm -f "$stage/exports.txt" "$stage/missing.txt"
+    /bin/rm -f "$stage/diagnostics.txt"
     /bin/rm -f "$stage/AICNativeProbe.kext/Contents/MacOS/AICNativeProbe"
     /bin/rm -f "$stage/AICNativeProbe.kext/Contents/Info.plist"
     /bin/rmdir "$stage/AICNativeProbe.kext/Contents/MacOS" 2>/dev/null || true
@@ -123,3 +126,15 @@ if ! /usr/bin/xcrun nm -g "$bundle/Contents/MacOS/AICNativeProbe" |
     exit 1
 fi
 echo 'Pacote temporário estruturado; coleção, carregamento e Wi-Fi não verificados.'
+if [ "$#" -eq 3 ]; then
+    if ! /usr/bin/kmutil print-diagnostics -Z -z -p "$bundle" > "$stage/diagnostics.txt" 2>&1; then
+        /bin/cat "$stage/diagnostics.txt"
+        echo 'Diagnóstico do kext falhou; não carregar este pacote.' >&2
+        exit 1
+    fi
+    /bin/cat "$stage/diagnostics.txt"
+    if /usr/bin/grep -Eq '^Error:|^[[:space:]]+Filesystem error:' "$stage/diagnostics.txt"; then
+        echo 'Diagnóstico do kext falhou; não carregar este pacote.' >&2
+        exit 1
+    fi
+fi
