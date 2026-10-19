@@ -1,17 +1,22 @@
 import ctypes
 import unittest
 
-from native_radio_control import NativeRadioPublisher, RadioState, state_for
+from native_radio_control import (Command, NativeRadioPublisher, RadioState,
+                                  decode_command, state_for, NOT_READY)
 
 
 class FakeIOKit:
-    def __init__(self, status=0):
+    def __init__(self, status=0, command=None):
         self.status = status
+        self.command = command
         self.calls = []
 
     def IOConnectCallStructMethod(self, connect, selector, source, size, output, output_size):
         self.calls.append((connect, selector, size,
-                           ctypes.string_at(source, size)))
+                           ctypes.string_at(source, size) if source else None))
+        if self.command is not None and output is not None:
+            ctypes.memmove(output, ctypes.byref(self.command),
+                           ctypes.sizeof(self.command))
         return self.status
 
     def IOServiceClose(self, connect):
@@ -30,7 +35,7 @@ class NativeRadioControlTests(unittest.TestCase):
         state = state_for(True, self.target, self.mac)
         self.assertEqual(ctypes.sizeof(state), 36)
         self.assertEqual((state.version, state.powered, state.associated,
-                          state.channel, state.rssi_dbm), (1, 1, 1, 6, -64))
+                          state.channel, state.rssi_dbm), (2, 1, 1, 6, -64))
         self.assertEqual(bytes(state.mac), self.mac)
         self.assertEqual(bytes(state.bssid), bytes.fromhex('021122334455'))
         self.assertNotIn(b'must-not-cross-bridge', bytes(state))
@@ -65,6 +70,22 @@ class NativeRadioControlTests(unittest.TestCase):
         self.assertEqual(io.calls[-1], ('close', 7))
         publisher.safe_publish(True, self.target, self.mac)
         self.assertEqual(len(io.calls), 2)
+
+    def test_reads_bounded_power_command(self):
+        io = FakeIOKit(command=Command(2, 1, 7, 0))
+        self.assertEqual(NativeRadioPublisher(io, 7).next_power_command(),
+                         (7, False))
+        self.assertEqual(io.calls[0][:3], (7, 2, 0))
+
+    def test_no_command_is_not_an_error(self):
+        self.assertIsNone(NativeRadioPublisher(FakeIOKit(status=NOT_READY), 7)
+                          .next_power_command())
+
+    def test_rejects_invalid_command(self):
+        for command in (Command(1, 1, 1, 1), Command(2, 3, 1, 1),
+                        Command(2, 1, 0, 1), Command(2, 1, 1, 2)):
+            with self.assertRaises(ValueError):
+                decode_command(command)
 
 
 if __name__ == '__main__':

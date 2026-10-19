@@ -38,7 +38,7 @@ trap cleanup EXIT
     -o "$stage/native_bridge_protocol_test" \
     "$repo_dir/tests/native_bridge_protocol_test.cpp"
 "$stage/native_bridge_protocol_test"
-echo 'Contrato de estado de rádio: testes locais OK.'
+echo 'Contrato de estado e comando de energia: testes locais OK.'
 
 /usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
     -mkernel -c -o "$stage/AICAirPortController.o" \

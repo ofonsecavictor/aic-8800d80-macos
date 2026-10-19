@@ -4,6 +4,8 @@
 // Defined by the controller. The service argument is checked before casting.
 extern "C" IOReturn AICNativePublishState(IOService *service,
                                            const AICNativeRadioState *state);
+extern "C" IOReturn AICNativeNextCommand(IOService *service,
+                                          AICNativeCommand *command);
 
 OSDefineMetaClassAndStructors(AICNativeBridgeUserClient, IOUserClient)
 
@@ -33,6 +35,22 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
         bcopy(arguments->structureInput, &state, sizeof(state));
         if (!AICNativeRadioStateValid(state)) return kIOReturnBadArgument;
         return AICNativePublishState(getService(), &state);
+    }
+    if (selector == kAICNativeNextCommand) {
+        if (arguments->scalarInputCount != 0 ||
+            arguments->scalarOutputCount != 0 ||
+            arguments->structureInputSize != 0 ||
+            !arguments->structureOutput ||
+            arguments->structureOutputSize < sizeof(AICNativeCommand)) {
+            return kIOReturnBadArgument;
+        }
+        AICNativeCommand command = {};
+        IOReturn status = AICNativeNextCommand(getService(), &command);
+        if (status != kIOReturnSuccess) return status;
+        if (!AICNativeCommandValid(command)) return kIOReturnError;
+        bcopy(&command, arguments->structureOutput, sizeof(command));
+        arguments->structureOutputSize = sizeof(command);
+        return kIOReturnSuccess;
     }
     return kIOReturnUnsupported;
 }

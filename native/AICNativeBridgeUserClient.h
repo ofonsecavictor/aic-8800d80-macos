@@ -2,7 +2,8 @@
 
 #include <IOKit/IOUserClient.h>
 
-// Compile-only control plane. It accepts radio state, never USB/RF commands.
+// Compile-only control plane. It accepts radio state and exposes a bounded
+// power request; it never accepts raw USB or RF payloads.
 class AICNativeBridgeUserClient final : public IOUserClient {
     OSDeclareDefaultStructors(AICNativeBridgeUserClient)
 

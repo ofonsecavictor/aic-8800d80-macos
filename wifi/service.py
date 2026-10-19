@@ -45,6 +45,16 @@ def optional_radio_bridge():
         print('AIC: ponte de estado nativo indisponível: '+str(error),flush=True)
         return None
 
+def apply_native_power_command(controller, bridge, last_sequence):
+    command=bridge.next_power_command()
+    if command is None:return last_sequence
+    sequence,enabled=command
+    if sequence==last_sequence:return last_sequence
+    response=controller.handle({'action':'power','enabled':enabled})
+    if not response.get('ok'):
+        raise RuntimeError('Comando de energia nativo AIC recusado.')
+    return sequence
+
 class Controller:
     def __init__(self):
         self.session_stop=None
@@ -52,6 +62,7 @@ class Controller:
         self.lock=threading.Lock()
         self.listener=None
         self.thread=None
+        self.native_thread=None
         self.presence_checked=0
         self.presence=False
         self.wifi=None
@@ -100,6 +111,8 @@ class Controller:
                     return {'ok':True}
                 self.wake.set();return {'ok':True}
             if action=='power' and isinstance(value.get('enabled'),bool):
+                if bool(config.get('enabled',False))==value['enabled']:
+                    return {'ok':True}
                 config['enabled']=value['enabled'];self.save(config);self.interrupt()
                 return {'ok':True}
             if action=='forget':
@@ -179,10 +192,33 @@ class Controller:
     def start(self):
         self.thread=threading.Thread(target=self.run,name='AIC menu control',daemon=True)
         self.thread.start()
+        self.native_thread=threading.Thread(target=self.monitor_native_power,
+                                            name='AIC native power control',daemon=True)
+        self.native_thread.start()
+
+    def monitor_native_power(self):
+        bridge=None;last_sequence=None
+        try:
+            while not stop.is_set():
+                if bridge is None:
+                    bridge=optional_radio_bridge()
+                    last_sequence=None
+                    if bridge is None:
+                        stop.wait(3);continue
+                try:
+                    last_sequence=apply_native_power_command(self,bridge,last_sequence)
+                    stop.wait(.2)
+                except (OSError,RuntimeError,ValueError) as error:
+                    print('AIC: controle nativo indisponível: '+str(error),flush=True)
+                    bridge.close();bridge=None
+                    stop.wait(3)
+        finally:
+            if bridge:bridge.close()
 
     def close(self):
         self.interrupt()
         if self.thread:self.thread.join(2)
+        if self.native_thread:self.native_thread.join(2)
 
 def main():
     if os.geteuid()!=0:raise RuntimeError('O serviço AIC exige root.')

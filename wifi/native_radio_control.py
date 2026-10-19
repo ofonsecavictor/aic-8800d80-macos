@@ -1,10 +1,12 @@
-"""Experimental IO80211 radio-state publisher; never owns the USB device."""
+"""Experimental IO80211 state/power bridge; never owns the USB device."""
 import ctypes as c
 
 from layouts import frequency_to_channel
 
-VERSION = 1
+VERSION = 2
 NOT_FOUND = 0
+NOT_READY = 0xe00002d8
+SET_POWER = 1
 
 
 class RadioState(c.Structure):
@@ -15,6 +17,21 @@ class RadioState(c.Structure):
 
 
 assert c.sizeof(RadioState) == 36
+
+
+class Command(c.Structure):
+    _fields_ = [('version', c.c_uint32), ('operation', c.c_uint32),
+                ('sequence', c.c_uint32), ('value', c.c_uint32)]
+
+
+assert c.sizeof(Command) == 16
+
+
+def decode_command(command):
+    if (command.version != VERSION or command.operation != SET_POWER or
+            not command.sequence or command.value not in (0, 1)):
+        raise ValueError('Invalid AIC native command')
+    return command.sequence, bool(command.value)
 
 
 def state_for(powered, target, mac):
@@ -104,6 +121,19 @@ class NativeRadioPublisher:
             self.connect, 1, c.byref(state), c.sizeof(state), None, None)
         if status:
             raise RuntimeError('AIC native state publish: %08x' % status)
+
+    def next_power_command(self):
+        if not self.connect:
+            return None
+        command = Command()
+        size = c.c_size_t(c.sizeof(command))
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 2, None, 0, c.byref(command), c.byref(size))
+        if status == NOT_READY:
+            return None
+        if status or size.value != c.sizeof(command):
+            raise RuntimeError('AIC native command read: %08x' % status)
+        return decode_command(command)
 
     def safe_publish(self, powered, target, mac):
         if not self.connect:

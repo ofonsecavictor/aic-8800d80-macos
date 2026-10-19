@@ -4,9 +4,11 @@
 
 // Shared with the future user-space AIC service. No credentials or RF payloads.
 enum {
-    kAICNativeBridgeVersion = 1,
+    kAICNativeBridgeVersion = 2,
     kAICNativeGetVersion = 0,
     kAICNativePublishRadioState = 1,
+    kAICNativeNextCommand = 2,
+    kAICNativeSetPower = 1,
 };
 
 typedef struct AICNativeRadioState {
@@ -20,8 +22,22 @@ typedef struct AICNativeRadioState {
     uint32_t reserved;
 } AICNativeRadioState;
 
+typedef struct AICNativeCommand {
+    uint32_t version;
+    uint32_t operation;
+    uint32_t sequence;
+    uint32_t value;
+} AICNativeCommand;
+
 #if defined(__cplusplus)
 static_assert(sizeof(AICNativeRadioState) == 36, "radio state ABI size");
+static_assert(sizeof(AICNativeCommand) == 16, "command ABI size");
+
+inline bool AICNativeCommandValid(const AICNativeCommand &command) {
+    return command.version == kAICNativeBridgeVersion &&
+           command.operation == kAICNativeSetPower &&
+           command.sequence != 0 && command.value <= 1;
+}
 
 inline bool AICNativeRadioStateValid(const AICNativeRadioState &state) {
     if (state.version != kAICNativeBridgeVersion || state.reserved != 0 ||

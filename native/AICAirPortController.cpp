@@ -7,6 +7,7 @@
 #include <IOKit/IOLocks.h>
 #include <mach/kmod.h>
 #include "AICNativeBridgeProtocol.h"
+#include "AICNativePowerMailbox.h"
 #include "AICNativeBridgeUserClient.h"
 
 class AICAirPortController final : public IO80211Controller {
@@ -43,11 +44,13 @@ public:
                            OSDictionary *properties,
                            IOUserClient **handler) override;
     IOReturn publishRadioState(const AICNativeRadioState &state);
+    IOReturn nextCommand(AICNativeCommand *command);
 
 private:
     IOLock *stateLock = nullptr;
     AICNativeRadioState radioState = {};
     bool stateReady = false;
+    AICNativePowerMailbox powerMailbox;
 };
 
 OSDefineMetaClassAndStructors(AICAirPortController, IO80211Controller)
@@ -132,6 +135,18 @@ IOReturn AICAirPortController::publishRadioState(
     IOLockLock(stateLock);
     radioState = state;
     stateReady = true;
+    powerMailbox.observe(state.powered != 0);
+    IOLockUnlock(stateLock);
+    return kIOReturnSuccess;
+}
+
+IOReturn AICAirPortController::nextCommand(AICNativeCommand *command) {
+    if (!command || !stateLock) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    if (!powerMailbox.read(command)) {
+        IOLockUnlock(stateLock);
+        return kIOReturnNotReady;
+    }
     IOLockUnlock(stateLock);
     return kIOReturnSuccess;
 }
@@ -144,9 +159,25 @@ extern "C" IOReturn AICNativePublishState(
     return controller->publishRadioState(*state);
 }
 
+extern "C" IOReturn AICNativeNextCommand(
+    IOService *service, AICNativeCommand *command) {
+    if (!service || !command) return kIOReturnBadArgument;
+    AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
+    if (!controller) return kIOReturnBadArgument;
+    return controller->nextCommand(command);
+}
+
 IOReturn AICAirPortController::setPOWER(
-    IO80211SkywalkInterface *, apple80211_power_data *) {
-    return kIOReturnUnsupported;
+    IO80211SkywalkInterface *, apple80211_power_data *data) {
+    if (!data || !stateLock || data->version != APPLE80211_VERSION ||
+        data->num_radios == 0 || data->power_state[0] > APPLE80211_POWER_ON) {
+        return kIOReturnBadArgument;
+    }
+    const uint32_t requested = data->power_state[0] == APPLE80211_POWER_ON;
+    IOLockLock(stateLock);
+    powerMailbox.request(requested, stateReady, radioState.powered != 0);
+    IOLockUnlock(stateLock);
+    return kIOReturnSuccess;
 }
 
 IOReturn AICAirPortController::getCOUNTRY_CODE(
