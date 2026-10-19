@@ -1,6 +1,7 @@
 import unittest
 
 from management import (action_frames, is_awdl_action_candidate,
+                        CONFIG_MONITOR_REQUEST_ID, CONFIG_MONITOR_CONFIRMATION_ID,
                         configure_monitor_request, parse_monitor_confirmation,
                         remain_on_channel_request,
                         parse_remain_on_channel_confirmation,
@@ -74,6 +75,8 @@ class RemainOnChannelTests(unittest.TestCase):
 
 class MonitorConfigurationTests(unittest.TestCase):
     def test_passive_channel_44_request_and_confirmation(self):
+        self.assertEqual((CONFIG_MONITOR_REQUEST_ID, CONFIG_MONITOR_CONFIRMATION_ID),
+                         (0x1411, 0x1412))
         payload = configure_monitor_request(5220)
         self.assertEqual(len(payload), 14)
         self.assertEqual(payload.hex(), '0100641464140000000001000000')

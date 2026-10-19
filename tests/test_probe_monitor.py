@@ -21,7 +21,7 @@ class MonitorWifi(FakeWifi):
         self.monitor_response = response
 
     def request(self, message, payload=b'', confirmation=None):
-        if message == 0x1412:
+        if message == 0x1411:
             self.calls.append((message, payload))
             return (b'\x01\x00' + payload[:10]
                     if self.monitor_response is None else self.monitor_response)

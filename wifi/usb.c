@@ -49,7 +49,7 @@ uint32_t wifi_write(Wifi *w,const void *data,uint32_t length){
  case 6:expected=10;break;case 8:expected=1;break;case 0x65:expected=16;break;case 0x69:expected=24;break;
  case 0x73:case 0x7b:expected=4;break;case 0x77:expected=95;break;
  case 70:expected=20;break; /* MM_REMAIN_ON_CHANNEL_REQ, research branch only. */
- case 0x1412:expected=14;break; /* ME_CONFIG_MONITOR_REQ, research branch only. */
+ case 0x1411:expected=14;break; /* ME_CONFIG_MONITOR_REQ, research branch only. */
  case 0x24:expected=44;break;case 0x26:expected=1;break;case 0x1404:expected=2;break;
  case 0x1000:expected=376;break;case 0x1800:expected=320;break;case 0x1803:expected=4;break;}
  if(expected==0xffff||length!=expected+16||p[14]!=(expected&255)||p[15]!=(expected>>8))return 0xe00002c2;
