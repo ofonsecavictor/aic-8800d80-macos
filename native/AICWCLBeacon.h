@@ -94,3 +94,23 @@ inline bool AICEncodeWCLBeacon(const AICWCLBeaconInput &input,
     written = sizeof(metadata) + input.ieLength;
     return true;
 }
+
+inline bool AICValidWCLBeaconPacket(const void *packet, size_t length) {
+    if (!packet || length < sizeof(AICWCLBeaconMetadata) ||
+        length > sizeof(AICWCLBeaconMetadata) + kAICWCLMaxIEBytes) return false;
+    AICWCLBeaconMetadata metadata = {};
+    memcpy(&metadata, packet, sizeof(metadata));
+    if (metadata.ieLength != length - sizeof(metadata) ||
+        metadata.ssidLength > 32 || !metadata.channel || metadata.channel > 196 ||
+        metadata.rssi < -127 || metadata.rssi > 0 || !metadata.interval ||
+        (metadata.bssid[0] & 1) || metadata.reserved0 || metadata.reserved1 ||
+        metadata.flags != ((1u << 1) | (1u << 14))) return false;
+    bool nonzeroBssid = false;
+    for (unsigned i = 0; i < 6; ++i) nonzeroBssid |= metadata.bssid[i] != 0;
+    if (!nonzeroBssid) return false;
+    const bool fiveGHz = metadata.channel > 14;
+    if (metadata.channelSpec != (metadata.channel |
+        (fiveGHz ? 0xd000u : 0x1000u))) return false;
+    const uint8_t *ies = static_cast<const uint8_t *>(packet) + sizeof(metadata);
+    return AICValidWCLIEs(ies, metadata.ieLength);
+}

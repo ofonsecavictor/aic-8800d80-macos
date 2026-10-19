@@ -13,6 +13,7 @@ int main() {
     uint8_t output[sizeof(AICWCLBeaconMetadata) + sizeof(ies)] = {};
     size_t written = 0;
     assert(AICEncodeWCLBeacon(input, output, sizeof(output), written));
+    assert(AICValidWCLBeaconPacket(output, written));
     assert(written == sizeof(output));
     AICWCLBeaconMetadata metadata = {};
     memcpy(&metadata, output, sizeof(metadata));
@@ -22,6 +23,9 @@ int main() {
     assert(metadata.ssidLength == 3 && memcmp(metadata.ssid, ssid, 3) == 0);
     assert(memcmp(metadata.bssid, bssid, 6) == 0);
     assert(memcmp(output + sizeof(metadata), ies, sizeof(ies)) == 0);
+    output[offsetof(AICWCLBeaconMetadata, channelSpec)] = 0;
+    assert(!AICValidWCLBeaconPacket(output, written));
+    output[offsetof(AICWCLBeaconMetadata, channelSpec)] = 44;
     assert(!AICEncodeWCLBeacon(input, output, sizeof(output) - 1, written));
     assert(written == 0);
     input.channel = 6;

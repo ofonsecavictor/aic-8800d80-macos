@@ -40,5 +40,9 @@ int main() {
     put32(raw + 0x54, 3);
     put32(raw + 0x40, 0);
     assert(!AICDecodeWCLScanRequest(raw, sizeof(raw), result));
+    put32(raw + 0x40, 1);
+    put32(raw + 0x54, 1);
+    put32(raw + 0x58 + 8, 0x2000);
+    assert(!AICDecodeWCLScanRequest(raw, sizeof(raw), result));
     return 0;
 }

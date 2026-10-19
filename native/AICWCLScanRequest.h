@@ -51,6 +51,12 @@ inline bool AICDecodeWCLScanRequest(const void *buffer, size_t length,
             ((flags & 0x10) && channel <= 14)) continue;
         decoded.selectedChannels[channel / 8] |= uint8_t(1u << (channel % 8));
     }
+    if (count) {
+        bool anySelected = false;
+        for (unsigned i = 0; i < sizeof(decoded.selectedChannels); ++i)
+            anySelected |= decoded.selectedChannels[i] != 0;
+        if (!anySelected) return false;
+    }
     out = decoded;
     return true;
 }
