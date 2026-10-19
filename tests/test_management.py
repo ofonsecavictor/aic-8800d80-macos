@@ -1,6 +1,7 @@
 import unittest
 
-from management import action_frames
+from management import (action_frames, remain_on_channel_request,
+                        parse_remain_on_channel_confirmation)
 
 
 def record(frame, flags):
@@ -30,6 +31,27 @@ class ActionFrameTests(unittest.TestCase):
             list(action_frames(record(bytes(23), 2)))
         with self.assertRaisesRegex(ValueError, 'Truncated'):
             list(action_frames(record(b'\xd0\x00' + bytes(22), 2)))
+
+
+class RemainOnChannelTests(unittest.TestCase):
+    def test_encodes_20_mhz_listen_request(self):
+        payload = remain_on_channel_request(2, 5220, 200, 0)
+        self.assertEqual(len(payload), 20)
+        self.assertEqual(payload.hex(), '000201006414641400000000c800000000000000')
+
+    def test_rejects_dfs_and_unbounded_requests(self):
+        for args in ((0, 5260, 200, 0), (4, 5220, 200, 0),
+                     (0, 5220, 1001, 0), (0, 5220, 200, 128)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                remain_on_channel_request(*args)
+
+    def test_parses_confirmation_without_claiming_awdl(self):
+        self.assertEqual(parse_remain_on_channel_confirmation(b'\x00\x00\x03'),
+                         (True, 3))
+        self.assertEqual(parse_remain_on_channel_confirmation(b'\x00\x08\x00'),
+                         (False, 0))
+        with self.assertRaises(ValueError):
+            parse_remain_on_channel_confirmation(b'\x00\x00')
 
 
 if __name__ == '__main__':
