@@ -1,10 +1,17 @@
 #include "../native/AICNativeBridgeProtocol.h"
 #include "../native/AICNativePowerMailbox.h"
 #include "../native/AICNativeFrameMailbox.h"
+#include "../native/AICNativeCapabilityBits.h"
 
 #include <assert.h>
 
 int main() {
+    uint8_t capabilities[19] = {};
+    assert(AICSetNativeCapability(capabilities, sizeof(capabilities), 3));
+    assert(AICSetNativeCapability(capabilities, sizeof(capabilities), 14));
+    assert(capabilities[0] == 0x08 && capabilities[1] == 0x40);
+    assert(!AICSetNativeCapability(capabilities, sizeof(capabilities), 152));
+
     AICNativeRadioState state = {};
     state.version = kAICNativeBridgeVersion;
     state.mac[0] = 0x02;

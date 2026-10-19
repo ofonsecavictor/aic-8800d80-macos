@@ -9,6 +9,7 @@
 #include "AICNativeBridgeProtocol.h"
 #include "AICNativePowerMailbox.h"
 #include "AICNativeFrameMailbox.h"
+#include "AICNativeCapabilityBits.h"
 #include "AICNativeBridgeUserClient.h"
 
 class AICAirPortController final : public IO80211Controller {
@@ -119,18 +120,48 @@ SInt32 AICAirPortController::handleCardSpecific(
 }
 
 IOReturn AICAirPortController::getDRIVER_VERSION(
-    IO80211SkywalkInterface *, apple80211_version_data *) {
-    return kIOReturnUnsupported;
+    IO80211SkywalkInterface *, apple80211_version_data *data) {
+    if (!data) return kIOReturnBadArgument;
+    static const char driverVersion[] = "AIC 8800D80 native research 0.0.1";
+    static_assert(sizeof(driverVersion) <= sizeof(data->string), "driver version too long");
+    bzero(data, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    bcopy(driverVersion, data->string, sizeof(driverVersion));
+    data->string_len = sizeof(driverVersion) - 1;
+    return kIOReturnSuccess;
 }
 
 IOReturn AICAirPortController::getHARDWARE_VERSION(
-    IO80211SkywalkInterface *, apple80211_version_data *) {
-    return kIOReturnUnsupported;
+    IO80211SkywalkInterface *, apple80211_version_data *data) {
+    if (!data) return kIOReturnBadArgument;
+    static const char hardwareVersion[] = "AIC 8800D80 USB; firmware not reported";
+    static_assert(sizeof(hardwareVersion) <= sizeof(data->string), "hardware version too long");
+    bzero(data, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    bcopy(hardwareVersion, data->string, sizeof(hardwareVersion));
+    data->string_len = sizeof(hardwareVersion) - 1;
+    return kIOReturnSuccess;
 }
 
 IOReturn AICAirPortController::getCARD_CAPABILITIES(
-    IO80211SkywalkInterface *, apple80211_capability_data *) {
-    return kIOReturnUnsupported;
+    IO80211SkywalkInterface *, apple80211_capability_data *data) {
+    if (!data || !stateLock) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    const bool available = stateReady;
+    IOLockUnlock(stateLock);
+    if (!available) return kIOReturnNotReady;
+    bzero(data, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    // Only WPA2/CCMP has been exercised with this dongle. Do not advertise
+    // AWDL, WPA3, monitor, WEP, or scan-completion support prematurely.
+    if (!AICSetNativeCapability(data->capabilities,
+                                sizeof(data->capabilities),
+                                APPLE80211_CAP_AES_CCM) ||
+        !AICSetNativeCapability(data->capabilities,
+                                sizeof(data->capabilities),
+                                APPLE80211_CAP_WPA2))
+        return kIOReturnError;
+    return kIOReturnSuccess;
 }
 
 IOReturn AICAirPortController::getPOWER(
