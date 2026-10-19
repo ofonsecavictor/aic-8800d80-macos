@@ -36,7 +36,7 @@ def decode_command(command):
 
 def state_for(powered, target, mac):
     """Only authenticated association data may set associated=1."""
-    if len(mac) != 6 or mac[0] & 1:
+    if len(mac) != 6 or mac[0] & 1 or not any(mac):
         raise ValueError('Invalid AIC station MAC')
     if target is not None and not powered:
         raise ValueError('Association requires powered radio')

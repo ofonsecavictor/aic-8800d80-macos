@@ -52,6 +52,8 @@ class NativeRadioControlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             state_for(True, self.target, b'\xff' * 6)
         with self.assertRaises(ValueError):
+            state_for(True, self.target, b'\x00' * 6)
+        with self.assertRaises(ValueError):
             state_for(True, {**self.target, 'rssi': -128}, self.mac)
         with self.assertRaises(ValueError):
             state_for(True, {**self.target, 'bssid': 'ff:ff:ff:ff:ff:ff'}, self.mac)

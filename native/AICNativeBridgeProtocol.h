@@ -45,10 +45,20 @@ inline bool AICNativeRadioStateValid(const AICNativeRadioState &state) {
         state.rssi_dbm < -127 || state.rssi_dbm > 0) {
         return false;
     }
-    if (state.associated && (!state.powered || state.channel == 0)) {
+    bool validMac = (state.mac[0] & 1) == 0;
+    bool nonzeroMac = false, nonzeroBssid = false;
+    for (unsigned i = 0; i < 6; ++i) {
+        nonzeroMac |= state.mac[i] != 0;
+        nonzeroBssid |= state.bssid[i] != 0;
+    }
+    if (!validMac || !nonzeroMac) return false;
+    if (state.associated && (!state.powered || state.channel == 0 ||
+                             !nonzeroBssid || (state.bssid[0] & 1))) {
         return false;
     }
-    if (!state.powered && (state.associated || state.channel != 0)) {
+    if (!state.associated && (state.channel != 0 || nonzeroBssid ||
+                              state.rssi_dbm != 0)) return false;
+    if (!state.powered && state.associated) {
         return false;
     }
     return true;

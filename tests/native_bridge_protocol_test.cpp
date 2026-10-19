@@ -6,13 +6,27 @@
 int main() {
     AICNativeRadioState state = {};
     state.version = kAICNativeBridgeVersion;
+    state.mac[0] = 0x02;
+    state.mac[5] = 0x01;
     assert(AICNativeRadioStateValid(state));
 
     state.powered = 1;
     state.associated = 1;
     state.channel = 6;
     state.rssi_dbm = -65;
+    state.bssid[0] = 0x02;
+    state.bssid[5] = 0x02;
     assert(AICNativeRadioStateValid(state));
+
+    state.mac[0] = 0x03;
+    assert(!AICNativeRadioStateValid(state));
+    state.mac[0] = 0x02;
+    state.bssid[0] = 0x03;
+    assert(!AICNativeRadioStateValid(state));
+    state.bssid[0] = 0x02;
+    state.associated = 0;
+    assert(!AICNativeRadioStateValid(state));
+    state.associated = 1;
 
     state.version = 1;
     assert(!AICNativeRadioStateValid(state));
@@ -29,6 +43,10 @@ int main() {
     assert(!AICNativeRadioStateValid(state));
     state.powered = 1;
     state.rssi_dbm = -128;
+    assert(!AICNativeRadioStateValid(state));
+    state.rssi_dbm = -65;
+    state.mac[0] = 0;
+    state.mac[5] = 0;
     assert(!AICNativeRadioStateValid(state));
 
     AICNativeCommand command = {kAICNativeBridgeVersion,

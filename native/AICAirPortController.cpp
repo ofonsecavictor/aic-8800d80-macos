@@ -19,6 +19,7 @@ public:
     bool start(IOService *provider) override;
     void stop(IOService *provider) override;
     bool isCommandProhibited(int command) override;
+    IOReturn getHardwareAddress(IOEthernetAddress *address) override;
     SInt32 handleCardSpecific(IO80211SkywalkInterface *interface,
                              unsigned long command, void *data,
                              bool isSet) override;
@@ -90,6 +91,19 @@ void AICAirPortController::stop(IOService *provider) {
 
 bool AICAirPortController::isCommandProhibited(int) {
     return true;
+}
+
+IOReturn AICAirPortController::getHardwareAddress(IOEthernetAddress *address) {
+    static_assert(sizeof(IOEthernetAddress) == 6, "Ethernet MAC ABI size");
+    if (!address || !stateLock) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    if (!stateReady) {
+        IOLockUnlock(stateLock);
+        return kIOReturnNotReady;
+    }
+    bcopy(radioState.mac, address, sizeof(*address));
+    IOLockUnlock(stateLock);
+    return kIOReturnSuccess;
 }
 
 SInt32 AICAirPortController::handleCardSpecific(
