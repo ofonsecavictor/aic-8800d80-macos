@@ -1,6 +1,7 @@
 import unittest
 
-from management import (action_frames, remain_on_channel_request,
+from management import (action_frames, is_awdl_action_candidate,
+                        remain_on_channel_request,
                         parse_remain_on_channel_confirmation,
                         cancel_remain_on_channel_request,
                         transmit_action_frame)
@@ -14,6 +15,15 @@ def record(frame, flags):
 
 
 class ActionFrameTests(unittest.TestCase):
+    def test_awdl_candidate_requires_vendor_prefix_and_subtype(self):
+        header = b'\xd0\x00' + bytes(22)
+        candidate = header + b'\x7f\x00\x17\xf2\x08\x10\x03'
+        self.assertTrue(is_awdl_action_candidate(candidate))
+        self.assertFalse(is_awdl_action_candidate(candidate[:-1]))
+        self.assertFalse(is_awdl_action_candidate(candidate[:28] + b'\x09' + candidate[29:]))
+        self.assertFalse(is_awdl_action_candidate(header + b'\x7f\x00\x17\xf2\x08\x10\x02'))
+        self.assertFalse(is_awdl_action_candidate(b'\x08' + candidate[1:]))
+
     def test_extracts_only_action_frames_with_vif(self):
         action = b'\xd0\x00' + bytes(22) + b'\x7f\x00\x17\xf2'
         data = b'\x08\x00' + bytes(22)

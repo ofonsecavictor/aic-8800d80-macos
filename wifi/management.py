@@ -11,6 +11,7 @@ from layouts import connectable_frequency, frequency_band
 RX_HEADER_LENGTH = 60
 IS_80211_MPDU = 1 << 1
 ACTION_SUBTYPE = 0x00d0
+AWDL_ACTION_PREFIX = b'\x7f\x00\x17\xf2\x08'
 REMAIN_ON_CHANNEL_REQUEST_ID = 70
 REMAIN_ON_CHANNEL_CONFIRMATION_ID = 71
 
@@ -89,3 +90,14 @@ def action_frames(data):
         if len(frame) < 25:
             raise ValueError('Truncated 802.11 action frame')
         yield (flags >> 8) & 0xff, frame
+
+
+def is_awdl_action_candidate(frame):
+    """Identify the public AWDL action prefix without parsing private payloads.
+
+    This is a candidate only: it does not authenticate the sender or prove a
+    usable AWDL/AirDrop link. Offsets follow the 24-byte 802.11 action header.
+    """
+    return (len(frame) >= 31 and
+            struct.unpack_from('<H', frame)[0] & 0x00fc == ACTION_SUBTYPE and
+            frame[24:29] == AWDL_ACTION_PREFIX and frame[30] in (0, 3))

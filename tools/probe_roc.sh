@@ -3,6 +3,11 @@
 # replaces installed source, library, package, kext, or EFI files.
 set -eu
 
+if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != '--capture' ]; }; then
+    echo 'Uso: sudo sh tools/probe_roc.sh [--capture]' >&2
+    exit 2
+fi
+
 daemon='/Library/LaunchDaemons/local.victor.AIC88M80WiFi.plist'
 support='/Library/Application Support/AIC88M80Driver/wifi'
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -57,5 +62,9 @@ echo 'Pausando temporariamente o Wi-Fi AIC para testar permanência em canal...'
 /bin/launchctl bootout system "$daemon"
 stopped=1
 /bin/sleep 2
-PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_roc.py" "$stage"
+if [ "$#" -eq 1 ]; then
+    PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_action_rx.py" "$stage"
+else
+    PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_roc.py" "$stage"
+fi
 echo 'Teste concluído. Reativando o serviço AIC...'
