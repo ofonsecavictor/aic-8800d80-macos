@@ -1,3 +1,7 @@
+[Português](#portugues) · [English](#english)
+
+<a id="portugues"></a>
+
 # AIC 8800D80 Wi-Fi e Bluetooth para macOS
 
 Projeto experimental para usar o dongle USB **AIC 8800D80** em um Hackintosh com macOS 15 Sequoia e OpenCore. A versão instalável atual é a **1.1.2**.
@@ -110,3 +114,120 @@ PYTHONPATH=wifi python3 -m unittest discover -s tests
 ```
 
 Não adicione ao GitHub perfis de rede, senhas, chaves, logs de uso, backups da EFI ou dumps de firmware. Para relatar um problema, inclua versão do macOS, CPU, OpenCore, IDs USB do dongle, comportamento observado e logs **revisados para remover dados pessoais**.
+
+---
+
+<a id="english"></a>
+
+# AIC 8800D80 Wi-Fi and Bluetooth for macOS
+
+An experimental project for using the **AIC 8800D80** USB dongle on a Hackintosh running macOS 15 Sequoia with OpenCore. The current installer version is **1.1.2**.
+
+**[Download the complete v1.1.2 installer](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.1.2)**
+
+> **Warning:** the installer modifies the EFI/OpenCore configuration used to boot your computer. Make your own backup of the **entire EFI partition** and keep an alternative boot method available before installing. The package is not signed with an Apple Developer ID. This project has been tested on one machine; it is not guaranteed to work on every Hackintosh.
+
+## Compatibility
+
+The dongle uses USB, so the radio does not depend on a particular motherboard model. That **does not** mean the package works on every computer, macOS version, or USB adapter.
+
+| Environment | Status in v1.1.2 |
+| --- | --- |
+| Intel `x86_64` Hackintosh, macOS 15 Sequoia, OpenCore, same AIC 8800D80 | Tested on **one** machine; other configurations have not been validated. |
+| AMD `x86_64` Hackintosh, macOS 15 Sequoia, OpenCore, same AIC 8800D80 | **Potentially compatible, untested.** The architecture check accepts `x86_64`, including AMD; it does not check the CPU brand. |
+| Apple Silicon (`arm64`) | Unsupported: the installer and binaries are `x86_64`. |
+| macOS other than 15 Sequoia | Unsupported by this package; the installer checks the OS version and configures its kexts for kernel 24.x. |
+| Clover, or an OpenCore EFI that cannot be identified or written | The installer stops without installing the EFI components. |
+| A different dongle or chip revision | Do not assume compatibility: the code checks USB IDs, chip revision, and firmware files. |
+
+The firmware loader expects the initial `a69c:8d80` USB device, its transition to `a69c:8d81` after firmware loading, and the chip revision checked in the code. **USB alone is not enough:** another product or revision may use a different protocol and firmware.
+
+### AMD Hackintosh notes
+
+An AMD machine that **already boots Sequoia through OpenCore** may meet the package's architecture requirements. The installer keeps existing `Kernel/Patch` entries, but changes `Kernel/Add` and NVRAM and **replaces the installed copies** of Lilu, BlueToolFixup, AIC88M80ModeSwitch, and AICUSBTransportFixup with the bundled versions. An AMD EFI that has already been tuned for its hardware may therefore encounter conflicts or regressions. That machine's [AMD kernel patches](https://github.com/AMD-OSX/AMD_Vanilla) remain its own responsibility; this package neither installs nor validates them.
+
+Do not claim “AMD support” just because the `.pkg` installs. Boot, USB enumeration, Wi-Fi, Bluetooth, reconnection, and another reboot must all be checked on an AMD machine. Keep a working boot USB drive and an external EFI backup for the first test.
+
+## What is included
+
+- A firmware loader that initializes the AIC device over USB and waits for it to re-enumerate.
+- A `launchd` Wi-Fi service and the **AIC Wi-Fi** menu bar app.
+- Network scanning when the menu opens, network selection with a connection indicator, derived credential storage in the System Keychain, and automatic reconnection attempts.
+- OpenCore components for the dongle and Bluetooth integration: Lilu, BlueToolFixup, and two AIC-specific kexts.
+- An automatic backup of `EFI/OC` before OpenCore is changed. **This does not replace your own backup of the entire EFI partition.**
+
+The service can start with macOS even when the menu app is not open; the menu app starts in the user's session. The first connection still requires selecting a WPA2 network and entering its password once.
+
+## Requirements before installation
+
+1. A working `x86_64` Hackintosh running **macOS 15 Sequoia**, booted through an identifiable OpenCore EFI.
+2. An **AIC 8800D80** dongle matching the USB IDs and chip revision above.
+3. Access to a writable boot EFI partition, administrator authorization, and enough space for the OpenCore backup.
+4. A working `/usr/bin/python3` with the standard modules required by the pre-install script. On some macOS installations, this requires Apple's developer tools.
+5. A **WPA2-Personal/PSK network using CCMP**. Open networks, WPA3-only networks, and other authentication methods are unsupported in this version.
+
+## Installation and first use
+
+1. Back up the entire EFI partition and confirm that you can boot using a USB drive or another EFI if you need to roll back.
+2. Download the `.pkg` from the [v1.1.2 Release](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.1.2). Verify its SHA-256 before running it:
+
+   ```text
+   0c5a630029555cb22a9979a7bd6e21b072ddf1cf7e75779a39b39a5814059a20  AIC-8800D80-Complete-1.1.2.pkg
+   ```
+
+   On macOS, run `shasum -a 256 AIC-8800D80-Complete-1.1.2.pkg` to calculate the downloaded file's hash.
+3. Open the installer, grant the requested permissions, and read its warnings. It installs the app at `/Applications/AIC Wi-Fi.app`, prepares the services, and updates the boot OpenCore EFI. It attempts to open the app in the current session.
+4. **Restart** when prompted so the EFI changes take effect. Connect the dongle if it is not already connected.
+5. Open the AIC Wi-Fi menu bar icon. Scanning starts automatically; select a WPA2 network and enter its password. Wait for the connection indicator without closing the menu.
+6. Verify network access and test again after another reboot. The service attempts to reconnect to the selected network when the dongle and saved credential are available.
+
+The first boot may take longer because of USB initialization and firmware loading. Scan time, connection time, and throughput depend on the dongle, USB port, signal, band, and router; **90 Mb/s is not guaranteed**. A full scan may be deferred while connected to avoid interrupting the USB link.
+
+## What the installer changes
+
+- Copies the app to `/Applications` and support files to `/Library/Application Support/AIC88M80Driver`.
+- Installs services in `/Library/LaunchDaemons` and the menu app in `/Library/LaunchAgents`.
+- Finds and mounts the EFI partition used for boot, then copies `EFI/OC` to `/Library/Application Support/AIC88M80Driver/Backups/EFI-*/OC`.
+- Copies/replaces four kexts in `EFI/OC/Kexts` and enables their entries in `Kernel/Add` in `config.plist`.
+- Adds `-btlfxboardid` and `-aicusbfix` to `boot-args` and Bluetooth metadata under NVRAM in `config.plist`.
+
+The installer does not intentionally modify `Kernel/Patch`, but it does not check whether all other kexts, patches, and settings in a particular EFI work with the bundled versions. If the EFI update step fails, the code attempts to roll back that step; you should still keep your own backup.
+
+## Known limitations
+
+- Practical testing covers only the hardware and macOS combination described above. AMD still needs real-world validation.
+- WPA2-PSK/CCMP only in this version; open networks, WPA3-only networks, and enterprise authentication are not supported.
+- The project uses its own networking service; Apple ecosystem features such as AirDrop, Handoff, and Continuity **have not been validated** by this project.
+- A full scan is deferred while connected to avoid the USB control timeout observed with this dongle.
+- The published package has no Apple Developer ID signature or Apple notarization.
+- This repository is a source **snapshot**, not a reproducible `.pkg` build: firmware, third-party kexts, and generated binaries are not tracked here.
+
+## Troubleshooting and recovery
+
+If networks do not appear or the connection does not return after boot:
+
+1. Confirm that the correct USB dongle is connected and appears in System Information → USB. Try another USB port if it does not enumerate.
+2. Check that the services started: `sudo launchctl print system/local.victor.AIC88M80Firmware` and `sudo launchctl print system/local.victor.AIC88M80WiFi`.
+3. Review the local logs at `/Library/Logs/AIC88M80Driver.log`, `/Library/Logs/AIC88M80WiFi.log`, and `/Library/Logs/AIC88M80Installer.log`. They may contain the network name and computer details; **remove personal information before sharing them**.
+4. Check the installed version with `pkgutil --pkg-info local.victor.AIC8800D80`.
+
+If macOS stops booting after installation, boot through your alternative method and **restore your EFI backup**. The automatic `EFI/OC` backup is stored at the path above, but it is not a backup of the whole partition. Do not blindly copy another machine's EFI: preserve AMD patches and other hardware-specific settings.
+
+## Source code
+
+| Directory | Contents |
+| --- | --- |
+| [`wifi/`](wifi/) | Service, USB transport, scanning, WPA2 authentication, networking, and reports. |
+| [`menu/`](menu/) | Swift menu bar app. |
+| [`firmware-loader/`](firmware-loader/) | Firmware initialization and USB communication. |
+| [`installer/`](installer/) | Scripts, package settings, OpenCore integration, and `launchd` services. |
+| [`kexts/`](kexts/) | Sources for the two AIC-specific kexts. |
+| [`tests/`](tests/) | Automated logic tests that do not require a dongle. |
+
+To run the logic tests in an environment with Python 3:
+
+```sh
+PYTHONPATH=wifi python3 -m unittest discover -s tests
+```
+
+Do not commit network profiles, passwords, keys, usage logs, EFI backups, or firmware dumps to GitHub. When reporting an issue, include the macOS version, CPU, OpenCore version, dongle USB IDs, observed behavior, and logs **reviewed to remove personal information**.
