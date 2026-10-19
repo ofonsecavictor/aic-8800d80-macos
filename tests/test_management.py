@@ -1,7 +1,8 @@
 import unittest
 
 from management import (action_frames, remain_on_channel_request,
-                        parse_remain_on_channel_confirmation)
+                        parse_remain_on_channel_confirmation,
+                        cancel_remain_on_channel_request)
 
 
 def record(frame, flags):
@@ -50,8 +51,13 @@ class RemainOnChannelTests(unittest.TestCase):
                          (True, 3))
         self.assertEqual(parse_remain_on_channel_confirmation(b'\x00\x08\x00'),
                          (False, 0))
+        self.assertEqual(parse_remain_on_channel_confirmation(b'\x01\x00\x00', operation=1),
+                         (True, 0))
         with self.assertRaises(ValueError):
             parse_remain_on_channel_confirmation(b'\x00\x00')
+
+    def test_cancel_request_matches_zero_initialized_linux_structure(self):
+        self.assertEqual(cancel_remain_on_channel_request(), b'\x01' + bytes(19))
 
 
 if __name__ == '__main__':

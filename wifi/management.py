@@ -28,11 +28,16 @@ def remain_on_channel_request(vif, frequency, duration_ms, tx_power_dbm):
                        frequency, frequency, 0, duration_ms, tx_power_dbm)
 
 
-def parse_remain_on_channel_confirmation(body):
+def parse_remain_on_channel_confirmation(body, operation=0):
     """Return (accepted, context_index) from MM_REMAIN_ON_CHANNEL_CFM."""
-    if len(body) != 3 or body[0] != 0:
+    if operation not in (0, 1) or len(body) != 3 or body[0] != operation:
         raise ValueError('Invalid ROC start confirmation')
     return body[1] == 0, body[2]
+
+
+def cancel_remain_on_channel_request():
+    """Encode MM_ROC_OP_CANCEL; all fields except op_code remain zero."""
+    return bytes([1]) + bytes(19)
 
 
 def action_frames(data):
