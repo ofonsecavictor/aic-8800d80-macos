@@ -47,6 +47,7 @@ public:
                            OSDictionary *properties,
                            IOUserClient **handler) override;
     IOReturn publishRadioState(const AICNativeRadioState &state);
+    IOReturn copyRadioState(AICNativeRadioState *state);
     IOReturn nextCommand(AICNativeCommand *command);
     IOReturn submitReceivedFrame(const AICNativeFrame &frame);
     IOReturn nextReceivedFrame(AICNativeFrame *frame);
@@ -192,6 +193,18 @@ IOReturn AICAirPortController::publishRadioState(
     return kIOReturnSuccess;
 }
 
+IOReturn AICAirPortController::copyRadioState(AICNativeRadioState *state) {
+    if (!state || !stateLock) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    if (!stateReady) {
+        IOLockUnlock(stateLock);
+        return kIOReturnNotReady;
+    }
+    *state = radioState;
+    IOLockUnlock(stateLock);
+    return kIOReturnSuccess;
+}
+
 IOReturn AICAirPortController::nextCommand(AICNativeCommand *command) {
     if (!command || !stateLock) return kIOReturnBadArgument;
     IOLockLock(stateLock);
@@ -245,6 +258,14 @@ extern "C" IOReturn AICNativePublishState(
     AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
     if (!controller) return kIOReturnBadArgument;
     return controller->publishRadioState(*state);
+}
+
+extern "C" IOReturn AICNativeCopyRadioState(
+    IOService *service, AICNativeRadioState *state) {
+    if (!service || !state) return kIOReturnBadArgument;
+    AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
+    if (!controller) return kIOReturnBadArgument;
+    return controller->copyRadioState(state);
 }
 
 extern "C" IOReturn AICNativeNextCommand(
