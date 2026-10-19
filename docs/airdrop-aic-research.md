@@ -8,9 +8,11 @@ No Mac de teste, o AIC enumera como `a69c:8d81`, mas não há `IO80211Interface`
 
 O [driver Linux do AIC](https://github.com/radxa-pkg/aic8800/blob/main/src/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_main.c) contém caminhos P2P. Isso sugere uma capacidade a investigar, **não prova compatibilidade com AWDL**, nem que a revisão/firmware deste dongle permita associação STA e AirDrop simultâneos. Projetos de driver Wi-Fi nativo para outros chips também relatam dificuldade com AWDL ([exemplo: OpenIntelWireless](https://github.com/OpenIntelWireless/itlwm/issues/292)).
 
+O [NetworkingDriverKit público da Apple](https://developer.apple.com/documentation/networkingdriverkit) oferece somente interface Ethernet; a [orientação da Apple para Wi-Fi](https://developer.apple.com/documentation/driverkit/creating-a-driver-using-the-driverkit-sdk) aponta para uma extensão de kernel. Portanto, criar `en0` com DriverKit não faria o macOS tratar o AIC como AirPort nem habilitaria AirDrop. A SDK instalada não contém cabeçalhos públicos IO80211; a integração Wi-Fi nativa exige pesquisa de API privada e validação cuidadosa em uma EFI de testes.
+
 Marcos técnicos, nesta ordem:
 
-1. Medir, sem derrubar a conexão estável, as capacidades do firmware, número de interfaces virtuais e suporte a quadros de gerenciamento/ação e alternância de canal. Separar o que o driver Linux implementa do que este firmware realmente confirma.
+1. Medir, sem derrubar a conexão estável, versão, bits de capacidade e número de interfaces virtuais informados pelo firmware. A branch experimental já grava apenas esses quatro valores quando o serviço normalmente inicia; `tools/airdrop_preflight.py` os mostra quando disponíveis. Ainda será necessário medir suporte a quadros de gerenciamento/ação e alternância de canal. Separar o que o driver Linux implementa do que este firmware realmente confirma.
 2. Prototipar **fora da EFI de uso diário** uma interface Wi-Fi nativa do macOS para o AIC. O código atual de `native_backend.py` referencia uma ponte nativa, mas o pacote 1.1.2 a mantém desativada e não inclui um driver IO80211/AWDL funcional.
 3. Fazer a interface peer-to-peer trocar quadros reais com outro dispositivo Apple, mantendo a conexão à rede. A presença de `awdl0` é apenas um indicador intermediário, não prova AirDrop.
 4. Testar descoberta, envio e recebimento de arquivos, reconexão Wi-Fi, Bluetooth e dois reinícios consecutivos antes de falar em suporte.
@@ -27,9 +29,11 @@ On the test Mac, the AIC enumerates as `a69c:8d81`, but neither `IO80211Interfac
 
 The [AIC Linux driver](https://github.com/radxa-pkg/aic8800/blob/main/src/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_main.c) contains P2P paths. This suggests a capability worth investigating, **not proven AWDL compatibility** or simultaneous STA/AirDrop operation on this dongle revision and firmware. Native Wi-Fi drivers for other chips have also encountered AWDL difficulties ([OpenIntelWireless example](https://github.com/OpenIntelWireless/itlwm/issues/292)).
 
+Apple's public [NetworkingDriverKit](https://developer.apple.com/documentation/networkingdriverkit) supports Ethernet interfaces only; [Apple's Wi-Fi driver guidance](https://developer.apple.com/documentation/driverkit/creating-a-driver-using-the-driverkit-sdk) points to a kernel extension. Creating `en0` with DriverKit would therefore not make the AIC appear as an AirPort device or enable AirDrop. The installed SDK has no public IO80211 headers; native Wi-Fi integration requires private-API research and careful validation using a test EFI.
+
 Engineering gates, in order:
 
-1. Without interrupting the stable connection, measure firmware capabilities, virtual interface count, management/action-frame support, and channel switching. Distinguish Linux-driver code paths from capabilities confirmed by this firmware.
+1. Without interrupting the stable connection, record the firmware version, feature bits, and virtual interface count. The experimental branch now records only these four values when the service starts normally; `tools/airdrop_preflight.py` displays them when available. Management/action-frame support and channel switching still need investigation. Distinguish Linux-driver code paths from capabilities confirmed by this firmware.
 2. Prototype an AIC-backed macOS native Wi-Fi interface **outside the daily-boot EFI**. The current `native_backend.py` references a native bridge, but package 1.1.2 disables it and includes no functioning IO80211/AWDL driver.
 3. Exchange actual peer-to-peer frames with another Apple device while preserving infrastructure Wi-Fi. The presence of `awdl0` is only an intermediate signal, not proof of AirDrop.
 4. Test discovery, file sending and receiving, Wi-Fi reconnection, Bluetooth, and two consecutive reboots before claiming support.

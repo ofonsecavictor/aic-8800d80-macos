@@ -16,6 +16,16 @@ HERE=Path(__file__).resolve().parent
 SOCKET=Path('/private/tmp/aic-wifi-control.sock')
 stop=threading.Event()
 
+def publish_capabilities(info):
+    """Record only non-identifying firmware limits for native-driver research."""
+    keys=('lmac_version','features','max_stations','max_interfaces')
+    if not isinstance(info,dict) or any(key not in info for key in keys):return
+    try:
+        write_report(HERE/'hardware-capabilities.json',
+            {key:info[key] for key in keys},mode=0o644)
+    except OSError as error:
+        print('AIC: diagnóstico de capacidade indisponível: '+str(error),flush=True)
+
 def credential(ssid):
     result=subprocess.run([str(HERE/'aic-wifi-credential'),'--read',ssid],
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15)
@@ -190,7 +200,7 @@ def main():
                     # Fresh install: expose nearby WPA2 networks before any
                     # credential exists, then sleep until selection/rescan.
                     w=Wifi();w.native_stop=session_stop;controller.wifi=w
-                    w.identity()
+                    publish_capabilities(w.identity())
                     print('AIC: primeira configuração; buscando redes disponíveis.',flush=True)
                     w.scan()
                     controller.wifi=None
@@ -200,7 +210,7 @@ def main():
                 key=credential(ssid)
                 w=Wifi();w.native_stop=session_stop;w.target_band=config.get('preferred_band')
                 controller.wifi=w
-                w.identity()
+                publish_capabilities(w.identity())
                 from native_backend import Bridge,Manager,NativeError,NOT_FOUND
                 try:bridge=Bridge() if config.get('native_enabled',False) else None
                 except NativeError as error:

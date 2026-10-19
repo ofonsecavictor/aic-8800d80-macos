@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from unittest.mock import patch
 import unittest
 
 
@@ -19,7 +20,7 @@ class PreflightTests(unittest.TestCase):
                 return '"idVendor" = 42652\n"idProduct" = 36225\n'
             return ""
 
-        result = preflight.probe(run)
+        result = preflight.probe(run, capabilities={})
         self.assertEqual(result["aic_usb_stage"], "ready")
         self.assertFalse(result["awdl0_present"])
         self.assertFalse(result["airdrop_proven"])
@@ -32,7 +33,7 @@ class PreflightTests(unittest.TestCase):
                 return '"idVendor" = 42652\n"idProduct" = 36225\n'
             return "IO80211Interface"
 
-        result = preflight.probe(run)
+        result = preflight.probe(run, capabilities={})
         self.assertTrue(result["awdl0_present"])
         self.assertTrue(result["io80211_interface_present"])
         self.assertFalse(result["airdrop_proven"])
@@ -43,7 +44,36 @@ class PreflightTests(unittest.TestCase):
                 return '"idVendor" = 1\n"idProduct" = 36225\n'
             return ""
 
-        self.assertEqual(preflight.probe(run)["aic_usb_stage"], "not_found")
+        self.assertEqual(preflight.probe(run, capabilities={})["aic_usb_stage"], "not_found")
+
+    def test_capability_report_excludes_identifiers(self):
+        import service
+
+        info = {
+            'lmac_version': '06090101', 'features': '00000001',
+            'max_stations': 2, 'max_interfaces': 2,
+            'mac': '11:22:33:44:55:66', 'location': 'deadbeef',
+        }
+        with patch.object(service, 'write_report') as write:
+            service.publish_capabilities(info)
+        payload = write.call_args.args[1]
+        self.assertEqual(set(payload), {
+            'lmac_version', 'features', 'max_stations', 'max_interfaces'
+        })
+        self.assertNotIn('mac', payload)
+
+    def test_missing_capabilities_do_not_interrupt_wifi(self):
+        import service
+
+        with patch.object(service, 'write_report') as write:
+            service.publish_capabilities(None)
+        write.assert_not_called()
+
+        with patch.object(service, 'write_report', side_effect=OSError('read-only')):
+            service.publish_capabilities({
+                'lmac_version': '06090101', 'features': '00000001',
+                'max_stations': 2, 'max_interfaces': 2,
+            })
 
 
 if __name__ == "__main__":

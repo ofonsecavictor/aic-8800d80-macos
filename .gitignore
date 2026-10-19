@@ -15,5 +15,6 @@ estado-conexao.json
 redes-disponiveis.json
 resultado-autenticacao.json
 radio-state.json
+hardware-capabilities.json
 profile.json
 last-install.json
