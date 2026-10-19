@@ -1,12 +1,12 @@
 #include "AICInfraInterface.h"
 
-OSDefineMetaClassAndStructors(AICInfraInterface, IO80211InfraInterface)
+OSDefineMetaClassAndStructors(AICInfraInterface, IO80211InfraProtocol)
 
 bool AICInfraInterface::initForAIC(IOService *provider, const uint8_t *mac) {
     if (!provider || !mac || (mac[0] & 1)) return false;
     bool nonzero = false;
     for (unsigned i = 0; i < sizeof(stationMac); ++i) nonzero |= mac[i] != 0;
-    if (!nonzero || !IO80211InfraInterface::init()) return false;
+    if (!nonzero || !IO80211InfraProtocol::init()) return false;
     bcopy(mac, &stationMac, sizeof(stationMac));
     if (!IO80211SkywalkInterface::init(provider, &stationMac)) return false;
     return true;

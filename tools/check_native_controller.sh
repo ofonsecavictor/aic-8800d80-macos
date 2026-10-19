@@ -13,6 +13,9 @@ fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+/usr/bin/python3 "$repo_dir/tools/generate_native_protocol_stubs.py" --check \
+    "$1/macOS15/IO80211InfraProtocol.h" \
+    "$repo_dir/native/AICInfraProtocolStubs.inc"
 sdk=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)
 kernel_headers="$sdk/System/Library/Frameworks/Kernel.framework/Versions/A/Headers"
 stage=$(/usr/bin/mktemp -d /private/tmp/aic-native-compile.XXXXXX)
@@ -46,7 +49,7 @@ echo 'Contrato de estado e comando de energia: testes locais OK.'
     -Wno-inconsistent-missing-override \
     -DKERNEL=1 -DAIRPORT_WCL=1 -D__PRIVATE_SPI__=1 -DIO80211FAMILY_V2=1 \
     -D__IO80211_TARGET=__MAC_15_2 -include "$1/apple_private_spi.h" \
-    -I"$1" -I"$2" -I"$kernel_headers" \
+    -I"$(dirname "$1")" -I"$1" -I"$2" -I"$kernel_headers" \
     "$repo_dir/native/AICAirPortController.cpp"
 /usr/bin/file "$stage/AICAirPortController.o"
 # Compile the explicitly opt-in lifecycle path as well. The bundled Mach-O
@@ -58,7 +61,7 @@ echo 'Contrato de estado e comando de energia: testes locais OK.'
     -DKERNEL=1 -DAIRPORT_WCL=1 -D__PRIVATE_SPI__=1 -DIO80211FAMILY_V2=1 \
     -D__IO80211_TARGET=__MAC_15_2 -DAIC_HEADLESS_BRIDGE_PROBE=1 \
     -include "$1/apple_private_spi.h" \
-    -I"$1" -I"$2" -I"$kernel_headers" \
+    -I"$(dirname "$1")" -I"$1" -I"$2" -I"$kernel_headers" \
     "$repo_dir/native/AICAirPortController.cpp"
 /usr/bin/file "$stage/AICAirPortController-headless.o"
 /usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
@@ -67,7 +70,7 @@ echo 'Contrato de estado e comando de energia: testes locais OK.'
     -Wno-inconsistent-missing-override \
     -DKERNEL=1 -DAIRPORT_WCL=1 -D__PRIVATE_SPI__=1 -DIO80211FAMILY_V2=1 \
     -D__IO80211_TARGET=__MAC_15_2 -include "$1/apple_private_spi.h" \
-    -I"$1" -I"$2" -I"$kernel_headers" \
+    -I"$(dirname "$1")" -I"$1" -I"$2" -I"$kernel_headers" \
     "$repo_dir/native/AICNativeBridgeUserClient.cpp"
 /usr/bin/file "$stage/AICNativeBridgeUserClient.o"
 
@@ -77,7 +80,7 @@ echo 'Contrato de estado e comando de energia: testes locais OK.'
     -Wno-inconsistent-missing-override \
     -DKERNEL=1 -DAIRPORT_WCL=1 -D__PRIVATE_SPI__=1 -DIO80211FAMILY_V2=1 \
     -D__IO80211_TARGET=__MAC_15_2 -include "$1/apple_private_spi.h" \
-    -I"$1" -I"$2" -I"$kernel_headers" \
+    -I"$(dirname "$1")" -I"$1" -I"$2" -I"$kernel_headers" \
     "$repo_dir/native/AICInfraInterface.cpp"
 /usr/bin/file "$stage/AICInfraInterface.o"
 
