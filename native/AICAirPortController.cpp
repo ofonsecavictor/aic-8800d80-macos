@@ -3,7 +3,7 @@
 // This file must not be loaded as a driver until the radio bridge and rollback
 // path are implemented and verified in an isolated test EFI.
 
-#include <IO80211Controller.h>
+#include <IO80211ControllerV2.h>
 #include "AICNativeBridgeUserClient.h"
 
 class AICAirPortController final : public IO80211Controller {
@@ -12,13 +12,28 @@ class AICAirPortController final : public IO80211Controller {
 public:
     bool start(IOService *provider) override;
     void stop(IOService *provider) override;
-    SInt32 apple80211Request(unsigned int requestType, int requestNumber,
-                            IO80211Interface *interface, void *data) override;
-    SInt32 stopDMA() override;
-    UInt32 hardwareOutputQueueDepth(IO80211Interface *interface) override;
-    SInt32 performCountryCodeOperation(IO80211Interface *interface,
-                                      IO80211CountryCodeOp operation) override;
-    SInt32 enableFeature(IO80211FeatureCode code, void *data) override;
+    bool isCommandProhibited(int command) override;
+    SInt32 handleCardSpecific(IO80211SkywalkInterface *interface,
+                             unsigned long command, void *data,
+                             bool isSet) override;
+    IOReturn getDRIVER_VERSION(IO80211SkywalkInterface *interface,
+                               apple80211_version_data *data) override;
+    IOReturn getHARDWARE_VERSION(IO80211SkywalkInterface *interface,
+                                 apple80211_version_data *data) override;
+    IOReturn getCARD_CAPABILITIES(IO80211SkywalkInterface *interface,
+                                  apple80211_capability_data *data) override;
+    IOReturn getPOWER(IO80211SkywalkInterface *interface,
+                      apple80211_power_data *data) override;
+    IOReturn setPOWER(IO80211SkywalkInterface *interface,
+                      apple80211_power_data *data) override;
+    IOReturn getCOUNTRY_CODE(IO80211SkywalkInterface *interface,
+                             apple80211_country_code_data *data) override;
+    IOReturn setCOUNTRY_CODE(IO80211SkywalkInterface *interface,
+                             apple80211_country_code_data *data) override;
+    IOReturn setGET_DEBUG_INFO(IO80211SkywalkInterface *interface,
+                                apple80211_debug_command *data) override;
+    CCLogStream *getLogger() const override;
+    CommonFaultReporter *getFaultReporterFromDriver() override;
     IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type,
                            OSDictionary *properties,
                            IOUserClient **handler) override;
@@ -36,26 +51,61 @@ void AICAirPortController::stop(IOService *provider) {
     IO80211Controller::stop(provider);
 }
 
-SInt32 AICAirPortController::apple80211Request(unsigned int, int,
-                                               IO80211Interface *, void *) {
+bool AICAirPortController::isCommandProhibited(int) {
+    return true;
+}
+
+SInt32 AICAirPortController::handleCardSpecific(
+    IO80211SkywalkInterface *, unsigned long, void *, bool) {
     return kIOReturnUnsupported;
 }
 
-SInt32 AICAirPortController::stopDMA() {
-    return kIOReturnSuccess;
-}
-
-UInt32 AICAirPortController::hardwareOutputQueueDepth(IO80211Interface *) {
-    return 0;
-}
-
-SInt32 AICAirPortController::performCountryCodeOperation(
-    IO80211Interface *, IO80211CountryCodeOp) {
+IOReturn AICAirPortController::getDRIVER_VERSION(
+    IO80211SkywalkInterface *, apple80211_version_data *) {
     return kIOReturnUnsupported;
 }
 
-SInt32 AICAirPortController::enableFeature(IO80211FeatureCode, void *) {
+IOReturn AICAirPortController::getHARDWARE_VERSION(
+    IO80211SkywalkInterface *, apple80211_version_data *) {
     return kIOReturnUnsupported;
+}
+
+IOReturn AICAirPortController::getCARD_CAPABILITIES(
+    IO80211SkywalkInterface *, apple80211_capability_data *) {
+    return kIOReturnUnsupported;
+}
+
+IOReturn AICAirPortController::getPOWER(
+    IO80211SkywalkInterface *, apple80211_power_data *) {
+    return kIOReturnUnsupported;
+}
+
+IOReturn AICAirPortController::setPOWER(
+    IO80211SkywalkInterface *, apple80211_power_data *) {
+    return kIOReturnUnsupported;
+}
+
+IOReturn AICAirPortController::getCOUNTRY_CODE(
+    IO80211SkywalkInterface *, apple80211_country_code_data *) {
+    return kIOReturnUnsupported;
+}
+
+IOReturn AICAirPortController::setCOUNTRY_CODE(
+    IO80211SkywalkInterface *, apple80211_country_code_data *) {
+    return kIOReturnUnsupported;
+}
+
+IOReturn AICAirPortController::setGET_DEBUG_INFO(
+    IO80211SkywalkInterface *, apple80211_debug_command *) {
+    return kIOReturnUnsupported;
+}
+
+CCLogStream *AICAirPortController::getLogger() const {
+    return nullptr;
+}
+
+CommonFaultReporter *AICAirPortController::getFaultReporterFromDriver() {
+    return nullptr;
 }
 
 IOReturn AICAirPortController::newUserClient(
