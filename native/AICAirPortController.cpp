@@ -4,6 +4,7 @@
 // path are implemented and verified in an isolated test EFI.
 
 #include <IO80211Controller.h>
+#include "AICNativeBridgeUserClient.h"
 
 class AICAirPortController final : public IO80211Controller {
     OSDeclareDefaultStructors(AICAirPortController)
@@ -18,6 +19,9 @@ public:
     SInt32 performCountryCodeOperation(IO80211Interface *interface,
                                       IO80211CountryCodeOp operation) override;
     SInt32 enableFeature(IO80211FeatureCode code, void *data) override;
+    IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type,
+                           OSDictionary *properties,
+                           IOUserClient **handler) override;
 };
 
 OSDefineMetaClassAndStructors(AICAirPortController, IO80211Controller)
@@ -52,4 +56,33 @@ SInt32 AICAirPortController::performCountryCodeOperation(
 
 SInt32 AICAirPortController::enableFeature(IO80211FeatureCode, void *) {
     return kIOReturnUnsupported;
+}
+
+IOReturn AICAirPortController::newUserClient(
+    task_t owningTask, void *securityID, UInt32 type,
+    OSDictionary *properties, IOUserClient **handler) {
+    if (!handler || type != 0) return kIOReturnBadArgument;
+    *handler = nullptr;
+    if (IOUserClient::clientHasPrivilege(
+            securityID, kIOClientPrivilegeAdministrator) != kIOReturnSuccess) {
+        return kIOReturnNotPrivileged;
+    }
+
+    AICNativeBridgeUserClient *client = OSTypeAlloc(AICNativeBridgeUserClient);
+    if (!client) return kIOReturnNoMemory;
+    if (!client->initWithTask(owningTask, securityID, type, properties)) {
+        client->release();
+        return kIOReturnError;
+    }
+    if (!client->attach(this)) {
+        client->release();
+        return kIOReturnError;
+    }
+    if (!client->start(this)) {
+        client->detach(this);
+        client->release();
+        return kIOReturnError;
+    }
+    *handler = client;
+    return kIOReturnSuccess;
 }

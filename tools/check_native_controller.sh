@@ -14,6 +14,7 @@ kernel_headers="$sdk/System/Library/Frameworks/Kernel.framework/Versions/A/Heade
 stage=$(/usr/bin/mktemp -d /private/tmp/aic-native-compile.XXXXXX)
 cleanup() {
     /bin/rm -f "$stage/AICAirPortController.o"
+    /bin/rm -f "$stage/AICNativeBridgeUserClient.o"
     /bin/rmdir "$stage" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -24,4 +25,10 @@ trap cleanup EXIT
     -I"$1" -I"$kernel_headers" \
     "$repo_dir/native/AICAirPortController.cpp"
 /usr/bin/file "$stage/AICAirPortController.o"
+/usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
+    -mkernel -c -o "$stage/AICNativeBridgeUserClient.o" \
+    -Wno-deprecated-declarations -DKERNEL=1 -D__IO80211_TARGET=__MAC_15_0 \
+    -I"$1" -I"$kernel_headers" \
+    "$repo_dir/native/AICNativeBridgeUserClient.cpp"
+/usr/bin/file "$stage/AICNativeBridgeUserClient.o"
 echo 'Objeto compilado; vínculo com IO80211Family e carregamento não verificados.'
