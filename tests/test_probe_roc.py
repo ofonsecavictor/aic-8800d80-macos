@@ -66,6 +66,20 @@ class ROCProbeTests(unittest.TestCase):
                          [0, 1])
         self.assertEqual(device.calls[-1][0], 0)
 
+    def test_callback_error_cancels_roc_before_removing_vifs(self):
+        device = FakeWifi()
+
+        def fail_action(_device, _vif, _frequency):
+            raise RuntimeError('Diagnostic USB submission failed')
+
+        with self.assertRaisesRegex(RuntimeError, 'submission failed'):
+            probe_roc.probe(device, on_roc=fail_action)
+        self.assertEqual([payload[0] for msg, payload in device.calls if msg == 70],
+                         [0, 1])
+        self.assertEqual([payload for msg, payload in device.calls if msg == 8],
+                         [b'\x01', b'\x00'])
+        self.assertEqual(device.calls[-1][0], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -16,7 +16,8 @@ from management import (REMAIN_ON_CHANNEL_REQUEST_ID,
 from probe_p2p_vif import add_interface, p2p_mac
 
 
-def probe(device, on_rx=None, duration_ms=200, frequency=5220, rx_filter=None):
+def probe(device, on_rx=None, duration_ms=200, frequency=5220, rx_filter=None,
+          on_roc=None):
     info = device.identity()
     if info['lmac_version'] != '06090101':
         raise RuntimeError('Untested firmware revision')
@@ -66,7 +67,10 @@ def probe(device, on_rx=None, duration_ms=200, frequency=5220, rx_filter=None):
         accepted, context = parse_remain_on_channel_confirmation(response)
         roc_started = accepted
         expired = False
+        roc_result = None
         if accepted:
+            if on_roc is not None:
+                roc_result = on_roc(device, peer, frequency)
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 if on_rx is not None:
@@ -84,10 +88,13 @@ def probe(device, on_rx=None, duration_ms=200, frequency=5220, rx_filter=None):
                     break
             if on_rx is not None:
                 drain_rx(on_rx)
-        return {'station_vif_created': True, 'p2p_vif_created': True,
+        result = {'station_vif_created': True, 'p2p_vif_created': True,
                 'station_vif_index': station, 'p2p_vif_index': peer,
                 'roc_accepted': accepted, 'roc_expired_indication': expired,
                 'airdrop_proven': False}
+        if on_roc is not None:
+            result['roc_action_result'] = roc_result
+        return result
     finally:
         cleanup_errors = []
         if roc_started:
