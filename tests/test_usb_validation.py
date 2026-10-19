@@ -36,6 +36,9 @@ class USBValidationTests(unittest.TestCase):
         action = (b'\xd0\x00' + bytes(2) + bytes.fromhex('ffffffffffff') + source
                   + bytes.fromhex('ffffffffffff') + bytes(2) + b'\x04')
         self.assertTrue(self.valid(transmit_action_frame(action, 1, source, 7)))
+        robust = bytearray(transmit_action_frame(action, 1, source, 7))
+        robust[56] = 8
+        self.assertFalse(self.valid(bytes(robust)))
         ethernet = bytes.fromhex('00112233445566778899aabb0800') + bytes(50)
         self.assertTrue(self.valid(transmit_frame(ethernet, 0, 0, 0x80000000)))
 

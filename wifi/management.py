@@ -91,6 +91,8 @@ def transmit_action_frame(frame, vif, source_mac, confirmation_index):
     frame_control = struct.unpack_from('<H', frame)[0]
     if frame_control & 0x00ff != ACTION_SUBTYPE or frame_control & 0x4000:
         raise ValueError('Only unprotected 802.11 action frames are supported')
+    if frame[24] not in (4, 127):
+        raise ValueError('Only non-robust public or vendor-specific actions are supported')
     descriptor = (struct.pack('<HHI', len(frame), 0, 0x80000000 | confirmation_index)
                   + bytes(14) + struct.pack('<4BH', 3, 0xff, vif, 0xff, 8))
     body = descriptor + frame

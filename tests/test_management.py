@@ -146,6 +146,11 @@ class ActionTransmitTests(unittest.TestCase):
             transmit_action_frame(self.frame, 4, self.source, 0)
         with self.assertRaises(ValueError):
             transmit_action_frame(self.frame, 1, self.source, 1 << 31)
+        robust = self.frame[:24] + b'\x08' + self.frame[25:]
+        with self.assertRaisesRegex(ValueError, 'non-robust'):
+            transmit_action_frame(robust, 1, self.source, 0)
+        vendor = self.frame[:24] + b'\x7f' + self.frame[25:]
+        self.assertTrue(transmit_action_frame(vendor, 1, self.source, 0))
 
 
 if __name__ == '__main__':

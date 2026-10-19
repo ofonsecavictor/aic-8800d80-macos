@@ -76,6 +76,7 @@ uint32_t wifi_validate_data_frame(const void *data,uint32_t length){
   for(unsigned i=12;i<26;i++)if(p[i])return 0xe00002c2;
   unsigned fc=p[32]|((unsigned)p[33]<<8);
   if((fc&0xff)!=0xd0||(fc&0x4000))return 0xe00002c2;
+  if(p[56]!=4&&p[56]!=127)return 0xe00002c2; /* No robust categories without PMF. */
  }else{
   /* Ethernet header lives in hostdesc; data area contains only payload. */
   if(flags||p[29]>31)return 0xe00002c2;
