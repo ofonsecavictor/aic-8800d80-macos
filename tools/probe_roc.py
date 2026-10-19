@@ -14,7 +14,7 @@ from management import (REMAIN_ON_CHANNEL_REQUEST_ID,
 from probe_p2p_vif import add_interface, p2p_mac
 
 
-def probe(device, on_rx=None, duration_ms=200):
+def probe(device, on_rx=None, duration_ms=200, frequency=5220):
     info = device.identity()
     if info['lmac_version'] != '06090101':
         raise RuntimeError('Untested firmware revision')
@@ -37,7 +37,7 @@ def probe(device, on_rx=None, duration_ms=200):
         if station == peer or station >= info['max_interfaces'] or peer >= info['max_interfaces']:
             raise RuntimeError('Firmware returned invalid or duplicate VIF indices')
 
-        payload = remain_on_channel_request(peer, 5220, duration_ms, 0)
+        payload = remain_on_channel_request(peer, frequency, duration_ms, 0)
         # If the confirmation is lost, the firmware may still have entered ROC.
         # Keep cancellation armed until rejection or matching expiry is proven.
         roc_started = True
