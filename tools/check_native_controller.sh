@@ -17,6 +17,7 @@ stage=$(/usr/bin/mktemp -d /private/tmp/aic-native-compile.XXXXXX)
 cleanup() {
     /bin/rm -f "$stage/AICAirPortController.o"
     /bin/rm -f "$stage/AICNativeBridgeUserClient.o"
+    /bin/rm -f "$stage/AICInfraInterface.o"
     /bin/rm -f "$stage/AICProbe" "$stage/undefined.txt"
     /bin/rm -f "$stage/native_bridge_protocol_test"
     /bin/rm -f "$stage/exports.txt" "$stage/missing.txt"
@@ -54,10 +55,21 @@ echo 'Contrato de estado de rádio: testes locais OK.'
     "$repo_dir/native/AICNativeBridgeUserClient.cpp"
 /usr/bin/file "$stage/AICNativeBridgeUserClient.o"
 
+/usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
+    -mkernel -c -o "$stage/AICInfraInterface.o" \
+    -Wno-deprecated-declarations -Wno-invalid-offsetof \
+    -Wno-inconsistent-missing-override \
+    -DKERNEL=1 -DAIRPORT_WCL=1 -D__PRIVATE_SPI__=1 -DIO80211FAMILY_V2=1 \
+    -D__IO80211_TARGET=__MAC_15_2 -include "$1/apple_private_spi.h" \
+    -I"$1" -I"$2" -I"$kernel_headers" \
+    "$repo_dir/native/AICInfraInterface.cpp"
+/usr/bin/file "$stage/AICInfraInterface.o"
+
 # Dynamic lookup only creates a Mach-O kext shape; it does not resolve an ABI.
 /usr/bin/xcrun ld -kext -arch x86_64 -undefined dynamic_lookup \
     -o "$stage/AICProbe" \
     "$stage/AICAirPortController.o" "$stage/AICNativeBridgeUserClient.o" \
+    "$stage/AICInfraInterface.o" \
     "$(dirname "$2")/Library/x86_64/libkmod.a"
 /usr/bin/file "$stage/AICProbe"
 
