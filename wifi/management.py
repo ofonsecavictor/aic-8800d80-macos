@@ -14,6 +14,8 @@ ACTION_SUBTYPE = 0x00d0
 AWDL_ACTION_PREFIX = b'\x7f\x00\x17\xf2\x08'
 REMAIN_ON_CHANNEL_REQUEST_ID = 70
 REMAIN_ON_CHANNEL_CONFIRMATION_ID = 71
+CONFIG_MONITOR_REQUEST_ID = 0x1412
+CONFIG_MONITOR_CONFIRMATION_ID = 0x1413
 
 
 def remain_on_channel_request(vif, frequency, duration_ms, tx_power_dbm):
@@ -39,6 +41,25 @@ def parse_remain_on_channel_confirmation(body, operation=0):
 def cancel_remain_on_channel_request():
     """Encode MM_ROC_OP_CANCEL; all fields except op_code remain zero."""
     return bytes([1]) + bytes(19)
+
+
+def configure_monitor_request(frequency):
+    """Encode a passive 20 MHz ME_CONFIG_MONITOR_REQ for an allowed channel."""
+    if not connectable_frequency(frequency):
+        raise ValueError('Invalid monitor channel')
+    return struct.pack('<BBHHHbBBBBx', frequency_band(frequency), 0,
+                       frequency, frequency, 0, 0, 0, 1, 0, 0)
+
+
+def parse_monitor_confirmation(body, frequency):
+    """Validate channel context and actual tuned channel, excluding peer data."""
+    if len(body) != 12 or body[0] == 0xff:
+        raise ValueError('Monitor channel not configured')
+    band, width, actual, center1, center2 = struct.unpack_from('<BBHHH', body, 2)
+    if (band != frequency_band(frequency) or width != 0 or
+            actual != frequency or center1 != frequency or center2 != 0):
+        raise ValueError('Monitor channel mismatch')
+    return body[0]
 
 
 def transmit_action_frame(frame, vif, source_mac, confirmation_index):

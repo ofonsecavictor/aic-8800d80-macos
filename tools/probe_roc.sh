@@ -3,8 +3,8 @@
 # replaces installed source, library, package, kext, or EFI files.
 set -eu
 
-if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != '--capture' ]; }; then
-    echo 'Uso: sudo sh tools/probe_roc.sh [--capture]' >&2
+if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != '--capture' ] && [ "$1" != '--monitor' ]; }; then
+    echo 'Uso: sudo sh tools/probe_roc.sh [--capture|--monitor]' >&2
     exit 2
 fi
 
@@ -58,11 +58,13 @@ fi
 /usr/bin/clang -dynamiclib -O2 -framework IOKit -framework CoreFoundation \
     -o "$stage/libaicwifi.dylib" "$repo_dir/wifi/usb.c"
 
-echo 'Pausando temporariamente o Wi-Fi AIC para testar permanência em canal...'
+echo 'Pausando temporariamente o Wi-Fi AIC para teste de rádio...'
 /bin/launchctl bootout system "$daemon"
 stopped=1
 /bin/sleep 2
-if [ "$#" -eq 1 ]; then
+if [ "$#" -eq 1 ] && [ "$1" = '--monitor' ]; then
+    PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_monitor.py" "$stage"
+elif [ "$#" -eq 1 ]; then
     PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_action_rx.py" "$stage"
 else
     PYTHONPATH="$repo_dir/wifi:$script_dir" /usr/bin/python3 "$script_dir/probe_roc.py" "$stage"

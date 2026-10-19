@@ -1,6 +1,7 @@
 import unittest
 
 from management import (action_frames, is_awdl_action_candidate,
+                        configure_monitor_request, parse_monitor_confirmation,
                         remain_on_channel_request,
                         parse_remain_on_channel_confirmation,
                         cancel_remain_on_channel_request,
@@ -69,6 +70,26 @@ class RemainOnChannelTests(unittest.TestCase):
 
     def test_cancel_request_matches_zero_initialized_linux_structure(self):
         self.assertEqual(cancel_remain_on_channel_request(), b'\x01' + bytes(19))
+
+
+class MonitorConfigurationTests(unittest.TestCase):
+    def test_passive_channel_44_request_and_confirmation(self):
+        payload = configure_monitor_request(5220)
+        self.assertEqual(len(payload), 14)
+        self.assertEqual(payload.hex(), '0100641464140000000001000000')
+        response = b'\x01\x00' + payload[:10]
+        self.assertEqual(parse_monitor_confirmation(response, 5220), 1)
+
+    def test_rejects_wrong_or_unset_channel(self):
+        with self.assertRaises(ValueError):
+            configure_monitor_request(5260)
+        payload = configure_monitor_request(5220)
+        for response in (b'\xff\x00' + payload[:10],
+                         b'\x01\x00' + configure_monitor_request(5745)[:10],
+                         b'\x01\x00' + payload[:4] + b'\x00\x00' + payload[6:10],
+                         b'\x01\x00' + payload[:9]):
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                parse_monitor_confirmation(response, 5220)
 
 
 class ActionTransmitTests(unittest.TestCase):
