@@ -2,7 +2,9 @@ import ctypes
 import unittest
 
 from native_radio_control import (Command, NativeRadioPublisher, RadioState,
-                                  decode_command, state_for, NOT_READY)
+                                  decode_command, state_for, NOT_READY,
+                                  ACTION_FRAME, ETHERNET_FRAME,
+                                  frame_for_service_rx, validate_frame)
 
 
 class FakeIOKit:
@@ -17,6 +19,7 @@ class FakeIOKit:
         if self.command is not None and output is not None:
             ctypes.memmove(output, ctypes.byref(self.command),
                            ctypes.sizeof(self.command))
+            output_size._obj.value = ctypes.sizeof(self.command)
         return self.status
 
     def IOServiceClose(self, connect):
@@ -88,6 +91,48 @@ class NativeRadioControlTests(unittest.TestCase):
                         Command(2, 1, 0, 1), Command(2, 1, 1, 2)):
             with self.assertRaises(ValueError):
                 decode_command(command)
+
+    def test_typed_eth_and_action_frames(self):
+        ethernet = frame_for_service_rx(ETHERNET_FRAME, bytes(14), 1, 0)
+        self.assertEqual((ethernet.length, ethernet.kind), (14, ETHERNET_FRAME))
+        action = bytearray(40)
+        action[0] = 0xd0
+        action[24] = 127
+        received = frame_for_service_rx(ACTION_FRAME, bytes(action), 2, 255, 44)
+        self.assertEqual((received.vif, received.channel), (255, 44))
+        with self.assertRaises(ValueError):
+            validate_frame(received, from_service=False)
+        received.vif = 1
+        validate_frame(received, from_service=False)
+        received.data[24] = 3
+        with self.assertRaises(ValueError):
+            validate_frame(received, from_service=False)
+
+    def test_rejects_invalid_native_frame(self):
+        with self.assertRaises(ValueError):
+            frame_for_service_rx(ETHERNET_FRAME, bytes(13), 1, 0)
+        with self.assertRaises(ValueError):
+            frame_for_service_rx(ACTION_FRAME, bytes(40), 1, 1, 44)
+        frame = frame_for_service_rx(ETHERNET_FRAME, bytes(14), 1, 0)
+        frame.data[14] = 1
+        with self.assertRaises(ValueError):
+            validate_frame(frame, from_service=True)
+
+    def test_submits_bounded_received_frame(self):
+        io = FakeIOKit()
+        frame = frame_for_service_rx(ETHERNET_FRAME, bytes(14), 1, 0)
+        NativeRadioPublisher(io, 7).submit_received_frame(frame)
+        self.assertEqual(io.calls[0][:3], (7, 4, 1540))
+
+    def test_reads_bounded_transmit_frame(self):
+        action = bytearray(40)
+        action[0] = 0xd0
+        action[24] = 127
+        frame = frame_for_service_rx(ACTION_FRAME, bytes(action), 1, 1, 44)
+        io = FakeIOKit(command=frame)
+        result = NativeRadioPublisher(io, 7).next_transmit_frame()
+        self.assertEqual(bytes(result.data[:result.length]), bytes(action))
+        self.assertEqual(io.calls[0][:3], (7, 3, 0))
 
 
 if __name__ == '__main__':

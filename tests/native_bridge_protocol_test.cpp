@@ -1,5 +1,6 @@
 #include "../native/AICNativeBridgeProtocol.h"
 #include "../native/AICNativePowerMailbox.h"
+#include "../native/AICNativeFrameMailbox.h"
 
 #include <assert.h>
 
@@ -62,6 +63,51 @@ int main() {
     command.sequence = 1;
     command.operation = 2;
     assert(!AICNativeCommandValid(command));
+
+    AICNativeFrame frame = {};
+    frame.version = kAICNativeBridgeVersion;
+    frame.kind = kAICNativeFrameEthernet;
+    frame.sequence = 1;
+    frame.vif = 0;
+    frame.length = 14;
+    assert(AICNativeFrameValid(frame, true));
+    assert(AICNativeFrameValid(frame, false));
+    frame.vif = 0xff;
+    assert(!AICNativeFrameValid(frame, true));
+    frame.kind = kAICNativeFrameAction;
+    frame.length = 40;
+    frame.channel = 44;
+    frame.data[0] = 0xd0;
+    frame.data[24] = 127;
+    assert(AICNativeFrameValid(frame, true));
+    assert(!AICNativeFrameValid(frame, false));
+    frame.vif = 1;
+    assert(AICNativeFrameValid(frame, false));
+    frame.data[24] = 3;
+    assert(AICNativeFrameValid(frame, true));
+    assert(!AICNativeFrameValid(frame, false));
+    frame.data[1] = 0x40;
+    assert(!AICNativeFrameValid(frame, true));
+
+    AICNativeFrameMailbox frames;
+    AICNativeFrame output = {};
+    assert(!frames.pop(&output));
+    frame.data[1] = 0;
+    frame.data[24] = 127;
+    for (unsigned i = 0; i < AICNativeFrameMailbox::kCapacity; ++i) {
+        frame.sequence = i + 1;
+        assert(frames.push(frame, true));
+    }
+    assert(frames.size() == AICNativeFrameMailbox::kCapacity);
+    assert(!frames.push(frame, true));
+    for (unsigned i = 0; i < AICNativeFrameMailbox::kCapacity; ++i) {
+        assert(frames.pop(&output));
+        assert(output.sequence == i + 1);
+    }
+    assert(frames.size() == 0);
+    assert(!frames.pop(&output));
+    frame.data[40] = 1;
+    assert(!AICNativeFrameValid(frame, true));
 
     AICNativePowerMailbox mailbox;
     assert(!mailbox.read(&command));

@@ -6,6 +6,10 @@ extern "C" IOReturn AICNativePublishState(IOService *service,
                                            const AICNativeRadioState *state);
 extern "C" IOReturn AICNativeNextCommand(IOService *service,
                                           AICNativeCommand *command);
+extern "C" IOReturn AICNativeSubmitReceivedFrame(
+    IOService *service, const AICNativeFrame *frame);
+extern "C" IOReturn AICNativeNextTransmitFrame(
+    IOService *service, AICNativeFrame *frame);
 
 OSDefineMetaClassAndStructors(AICNativeBridgeUserClient, IOUserClient)
 
@@ -50,6 +54,32 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
         if (!AICNativeCommandValid(command)) return kIOReturnError;
         bcopy(&command, arguments->structureOutput, sizeof(command));
         arguments->structureOutputSize = sizeof(command);
+        return kIOReturnSuccess;
+    }
+    if (selector == kAICNativeSubmitFrame) {
+        if (arguments->scalarInputCount != 0 ||
+            arguments->scalarOutputCount != 0 ||
+            arguments->structureOutputSize != 0 ||
+            arguments->structureInputSize != sizeof(AICNativeFrame) ||
+            !arguments->structureInput)
+            return kIOReturnBadArgument;
+        AICNativeFrame frame;
+        bcopy(arguments->structureInput, &frame, sizeof(frame));
+        return AICNativeSubmitReceivedFrame(getService(), &frame);
+    }
+    if (selector == kAICNativeNextFrame) {
+        if (arguments->scalarInputCount != 0 ||
+            arguments->scalarOutputCount != 0 ||
+            arguments->structureInputSize != 0 ||
+            !arguments->structureOutput ||
+            arguments->structureOutputSize < sizeof(AICNativeFrame))
+            return kIOReturnBadArgument;
+        AICNativeFrame frame = {};
+        IOReturn status = AICNativeNextTransmitFrame(getService(), &frame);
+        if (status != kIOReturnSuccess) return status;
+        if (!AICNativeFrameValid(frame, false)) return kIOReturnError;
+        bcopy(&frame, arguments->structureOutput, sizeof(frame));
+        arguments->structureOutputSize = sizeof(frame);
         return kIOReturnSuccess;
     }
     return kIOReturnUnsupported;

@@ -7,6 +7,8 @@ VERSION = 2
 NOT_FOUND = 0
 NOT_READY = 0xe00002d8
 SET_POWER = 1
+ETHERNET_FRAME = 1
+ACTION_FRAME = 2
 
 
 class RadioState(c.Structure):
@@ -25,6 +27,53 @@ class Command(c.Structure):
 
 
 assert c.sizeof(Command) == 16
+
+
+class Frame(c.Structure):
+    _fields_ = [('version', c.c_uint32), ('kind', c.c_uint32),
+                ('sequence', c.c_uint32), ('vif', c.c_uint32),
+                ('channel', c.c_uint32), ('length', c.c_uint32),
+                ('data', c.c_uint8 * 1514), ('reserved', c.c_uint8 * 2)]
+
+
+assert c.sizeof(Frame) == 1540
+
+
+def validate_frame(frame, from_service):
+    if (frame.version != VERSION or not frame.sequence or
+            any(frame.reserved) or
+            (frame.vif > 3 and not (from_service and frame.vif == 255))):
+        raise ValueError('Invalid AIC native frame header')
+    if frame.length > 1514 or any(frame.data[frame.length:]):
+        raise ValueError('Invalid AIC native frame padding')
+    if frame.kind == ETHERNET_FRAME:
+        if frame.vif == 255 or frame.channel != 0 or not 14 <= frame.length <= 1514:
+            raise ValueError('Invalid AIC Ethernet frame')
+    elif frame.kind == ACTION_FRAME:
+        if not 1 <= frame.channel <= 196 or not 25 <= frame.length <= 512:
+            raise ValueError('Invalid AIC action frame')
+        control = frame.data[0] | frame.data[1] << 8
+        if (control & 0xff) != 0xd0 or (control & 0x4000):
+            raise ValueError('Protected or non-action 802.11 frame')
+        if not from_service and frame.data[24] not in (4, 127):
+            raise ValueError('Unsupported action category for TX')
+    else:
+        raise ValueError('Invalid AIC frame kind')
+
+
+def frame_for_service_rx(kind, payload, sequence, vif, channel=0):
+    if not isinstance(payload, bytes) or len(payload) > 1514:
+        raise ValueError('Invalid AIC native frame payload')
+    frame = Frame()
+    frame.version = VERSION
+    frame.kind = kind
+    frame.sequence = sequence
+    frame.vif = vif
+    frame.channel = channel
+    frame.length = len(payload)
+    frame.data[:len(payload)] = payload
+    validate_frame(frame, from_service=True)
+    return frame
 
 
 def decode_command(command):
@@ -134,6 +183,29 @@ class NativeRadioPublisher:
         if status or size.value != c.sizeof(command):
             raise RuntimeError('AIC native command read: %08x' % status)
         return decode_command(command)
+
+    def submit_received_frame(self, frame):
+        if not self.connect:
+            raise RuntimeError('AIC native control is closed')
+        validate_frame(frame, from_service=True)
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 4, c.byref(frame), c.sizeof(frame), None, None)
+        if status:
+            raise RuntimeError('AIC native receive submit: %08x' % status)
+
+    def next_transmit_frame(self):
+        if not self.connect:
+            return None
+        frame = Frame()
+        size = c.c_size_t(c.sizeof(frame))
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 3, None, 0, c.byref(frame), c.byref(size))
+        if status == NOT_READY:
+            return None
+        if status or size.value != c.sizeof(frame):
+            raise RuntimeError('AIC native transmit read: %08x' % status)
+        validate_frame(frame, from_service=False)
+        return frame
 
     def safe_publish(self, powered, target, mac):
         if not self.connect:

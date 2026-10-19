@@ -8,6 +8,7 @@
 #include <mach/kmod.h>
 #include "AICNativeBridgeProtocol.h"
 #include "AICNativePowerMailbox.h"
+#include "AICNativeFrameMailbox.h"
 #include "AICNativeBridgeUserClient.h"
 
 class AICAirPortController final : public IO80211Controller {
@@ -46,12 +47,18 @@ public:
                            IOUserClient **handler) override;
     IOReturn publishRadioState(const AICNativeRadioState &state);
     IOReturn nextCommand(AICNativeCommand *command);
+    IOReturn submitReceivedFrame(const AICNativeFrame &frame);
+    IOReturn nextReceivedFrame(AICNativeFrame *frame);
+    IOReturn queueTransmitFrame(const AICNativeFrame &frame);
+    IOReturn nextTransmitFrame(AICNativeFrame *frame);
 
 private:
     IOLock *stateLock = nullptr;
     AICNativeRadioState radioState = {};
     bool stateReady = false;
     AICNativePowerMailbox powerMailbox;
+    AICNativeFrameMailbox receivedFrames;
+    AICNativeFrameMailbox transmitFrames;
 };
 
 OSDefineMetaClassAndStructors(AICAirPortController, IO80211Controller)
@@ -165,6 +172,42 @@ IOReturn AICAirPortController::nextCommand(AICNativeCommand *command) {
     return kIOReturnSuccess;
 }
 
+IOReturn AICAirPortController::submitReceivedFrame(
+    const AICNativeFrame &frame) {
+    if (!stateLock || !AICNativeFrameValid(frame, true))
+        return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    const bool queued = receivedFrames.push(frame, true);
+    IOLockUnlock(stateLock);
+    return queued ? kIOReturnSuccess : kIOReturnNoSpace;
+}
+
+IOReturn AICAirPortController::nextReceivedFrame(AICNativeFrame *frame) {
+    if (!frame || !stateLock) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    const bool available = receivedFrames.pop(frame);
+    IOLockUnlock(stateLock);
+    return available ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
+IOReturn AICAirPortController::queueTransmitFrame(
+    const AICNativeFrame &frame) {
+    if (!stateLock || !AICNativeFrameValid(frame, false))
+        return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    const bool queued = transmitFrames.push(frame, false);
+    IOLockUnlock(stateLock);
+    return queued ? kIOReturnSuccess : kIOReturnNoSpace;
+}
+
+IOReturn AICAirPortController::nextTransmitFrame(AICNativeFrame *frame) {
+    if (!frame || !stateLock) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    const bool available = transmitFrames.pop(frame);
+    IOLockUnlock(stateLock);
+    return available ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
 extern "C" IOReturn AICNativePublishState(
     IOService *service, const AICNativeRadioState *state) {
     if (!service || !state) return kIOReturnBadArgument;
@@ -179,6 +222,40 @@ extern "C" IOReturn AICNativeNextCommand(
     AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
     if (!controller) return kIOReturnBadArgument;
     return controller->nextCommand(command);
+}
+
+extern "C" IOReturn AICNativeSubmitReceivedFrame(
+    IOService *service, const AICNativeFrame *frame) {
+    if (!service || !frame) return kIOReturnBadArgument;
+    AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
+    if (!controller) return kIOReturnBadArgument;
+    return controller->submitReceivedFrame(*frame);
+}
+
+extern "C" IOReturn AICNativeNextTransmitFrame(
+    IOService *service, AICNativeFrame *frame) {
+    if (!service || !frame) return kIOReturnBadArgument;
+    AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
+    if (!controller) return kIOReturnBadArgument;
+    return controller->nextTransmitFrame(frame);
+}
+
+// These are the controller-side handoff points for a future IO80211 data path.
+// The current Infra interface does not call them or register with macOS.
+extern "C" IOReturn AICNativeNextReceivedFrame(
+    IOService *service, AICNativeFrame *frame) {
+    if (!service || !frame) return kIOReturnBadArgument;
+    AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
+    if (!controller) return kIOReturnBadArgument;
+    return controller->nextReceivedFrame(frame);
+}
+
+extern "C" IOReturn AICNativeQueueTransmitFrame(
+    IOService *service, const AICNativeFrame *frame) {
+    if (!service || !frame) return kIOReturnBadArgument;
+    AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
+    if (!controller) return kIOReturnBadArgument;
+    return controller->queueTransmitFrame(*frame);
 }
 
 IOReturn AICAirPortController::setPOWER(
