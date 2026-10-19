@@ -3,7 +3,8 @@
 set -eu
 
 if [ "$#" -ne 2 ] || [ ! -f "$1/macOS15/IO80211ControllerV2.h" ] ||
-    [ ! -f "$1/apple_private_spi.h" ] || [ ! -f "$2/IOKit/IOService.h" ]; then
+    [ ! -f "$1/apple_private_spi.h" ] || [ ! -f "$2/IOKit/IOService.h" ] ||
+    [ ! -f "$(dirname "$2")/Library/x86_64/libkmod.a" ]; then
     echo 'Uso: sh tools/check_native_controller.sh /caminho/itlwm-Sequoia/include/Airport /caminho/MacKernelSDK/Headers' >&2
     exit 2
 fi
@@ -18,6 +19,11 @@ cleanup() {
     /bin/rm -f "$stage/AICNativeBridgeUserClient.o"
     /bin/rm -f "$stage/AICProbe" "$stage/undefined.txt"
     /bin/rm -f "$stage/exports.txt" "$stage/missing.txt"
+    /bin/rm -f "$stage/AICNativeProbe.kext/Contents/MacOS/AICNativeProbe"
+    /bin/rm -f "$stage/AICNativeProbe.kext/Contents/Info.plist"
+    /bin/rmdir "$stage/AICNativeProbe.kext/Contents/MacOS" 2>/dev/null || true
+    /bin/rmdir "$stage/AICNativeProbe.kext/Contents" 2>/dev/null || true
+    /bin/rmdir "$stage/AICNativeProbe.kext" 2>/dev/null || true
     /bin/rmdir "$stage" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -44,7 +50,8 @@ trap cleanup EXIT
 # Dynamic lookup only creates a Mach-O kext shape; it does not resolve an ABI.
 /usr/bin/xcrun ld -kext -arch x86_64 -undefined dynamic_lookup \
     -o "$stage/AICProbe" \
-    "$stage/AICAirPortController.o" "$stage/AICNativeBridgeUserClient.o"
+    "$stage/AICAirPortController.o" "$stage/AICNativeBridgeUserClient.o" \
+    "$(dirname "$2")/Library/x86_64/libkmod.a"
 /usr/bin/file "$stage/AICProbe"
 
 boot_kc=/System/Library/KernelCollections/BootKernelExtensions.kc
@@ -64,4 +71,16 @@ if [ -f "$boot_kc" ] && [ -f "$system_kc" ]; then
     count=$(/usr/bin/wc -l < "$stage/undefined.txt" | /usr/bin/tr -d ' ')
     echo "$count símbolos externos encontrados nas coleções locais."
 fi
-echo 'Link permissivo apenas: ABI, carregamento e interface Wi-Fi não verificados.'
+
+bundle="$stage/AICNativeProbe.kext"
+/bin/mkdir -p "$bundle/Contents/MacOS"
+/bin/cp "$stage/AICProbe" "$bundle/Contents/MacOS/AICNativeProbe"
+/bin/chmod 755 "$bundle/Contents/MacOS/AICNativeProbe"
+/bin/cp "$repo_dir/native/AICNativeProbe-Info.plist" "$bundle/Contents/Info.plist"
+/usr/bin/plutil -lint "$bundle/Contents/Info.plist"
+if ! /usr/bin/xcrun nm -g "$bundle/Contents/MacOS/AICNativeProbe" |
+    /usr/bin/awk '$3 == "_kmod_info" {found = 1} END {exit !found}'; then
+    echo 'Pacote inválido: símbolo kmod_info ausente.' >&2
+    exit 1
+fi
+echo 'Pacote temporário estruturado; coleção, carregamento e Wi-Fi não verificados.'

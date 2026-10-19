@@ -4,6 +4,7 @@
 // path are implemented and verified in an isolated test EFI.
 
 #include <IO80211ControllerV2.h>
+#include <mach/kmod.h>
 #include "AICNativeBridgeUserClient.h"
 
 class AICAirPortController final : public IO80211Controller {
@@ -136,3 +137,12 @@ IOReturn AICAirPortController::newUserClient(
     *handler = client;
     return kIOReturnSuccess;
 }
+
+extern "C" kern_return_t _start(kmod_info_t *, void *);
+extern "C" kern_return_t _stop(kmod_info_t *, void *);
+// libkmod delegates to these optional hooks; the probe has no custom hook.
+extern "C" {
+kmod_start_func_t *_realmain = nullptr;
+kmod_stop_func_t *_antimain = nullptr;
+}
+KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.1", _start, _stop)
