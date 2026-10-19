@@ -18,6 +18,7 @@ cleanup() {
     /bin/rm -f "$stage/AICAirPortController.o"
     /bin/rm -f "$stage/AICNativeBridgeUserClient.o"
     /bin/rm -f "$stage/AICProbe" "$stage/undefined.txt"
+    /bin/rm -f "$stage/native_bridge_protocol_test"
     /bin/rm -f "$stage/exports.txt" "$stage/missing.txt"
     /bin/rm -f "$stage/AICNativeProbe.kext/Contents/MacOS/AICNativeProbe"
     /bin/rm -f "$stage/AICNativeProbe.kext/Contents/Info.plist"
@@ -27,6 +28,12 @@ cleanup() {
     /bin/rmdir "$stage" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+/usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
+    -o "$stage/native_bridge_protocol_test" \
+    "$repo_dir/tests/native_bridge_protocol_test.cpp"
+"$stage/native_bridge_protocol_test"
+echo 'Contrato de estado de rádio: testes locais OK.'
 
 /usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
     -mkernel -c -o "$stage/AICAirPortController.o" \

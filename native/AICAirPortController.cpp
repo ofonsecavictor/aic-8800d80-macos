@@ -1,16 +1,20 @@
 // Compile-only AIC IO80211Controller ABI experiment for macOS 15.
-// No Info.plist, hardware match, USB ownership, or installation is provided.
+// A disabled-match Info.plist exists; no USB ownership or installation exists.
 // This file must not be loaded as a driver until the radio bridge and rollback
 // path are implemented and verified in an isolated test EFI.
 
 #include <IO80211ControllerV2.h>
+#include <IOKit/IOLocks.h>
 #include <mach/kmod.h>
+#include "AICNativeBridgeProtocol.h"
 #include "AICNativeBridgeUserClient.h"
 
 class AICAirPortController final : public IO80211Controller {
     OSDeclareDefaultStructors(AICAirPortController)
 
 public:
+    bool init(OSDictionary *dictionary = nullptr) override;
+    void free() override;
     bool start(IOService *provider) override;
     void stop(IOService *provider) override;
     bool isCommandProhibited(int command) override;
@@ -38,9 +42,29 @@ public:
     IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type,
                            OSDictionary *properties,
                            IOUserClient **handler) override;
+    IOReturn publishRadioState(const AICNativeRadioState &state);
+
+private:
+    IOLock *stateLock = nullptr;
+    AICNativeRadioState radioState = {};
+    bool stateReady = false;
 };
 
 OSDefineMetaClassAndStructors(AICAirPortController, IO80211Controller)
+
+bool AICAirPortController::init(OSDictionary *dictionary) {
+    if (!IO80211Controller::init(dictionary)) return false;
+    stateLock = IOLockAlloc();
+    return stateLock != nullptr;
+}
+
+void AICAirPortController::free() {
+    if (stateLock) {
+        IOLockFree(stateLock);
+        stateLock = nullptr;
+    }
+    IO80211Controller::free();
+}
 
 bool AICAirPortController::start(IOService *provider) {
     // Refuse to register a ghost Wi-Fi interface without an AIC radio bridge.
@@ -77,8 +101,38 @@ IOReturn AICAirPortController::getCARD_CAPABILITIES(
 }
 
 IOReturn AICAirPortController::getPOWER(
-    IO80211SkywalkInterface *, apple80211_power_data *) {
-    return kIOReturnUnsupported;
+    IO80211SkywalkInterface *, apple80211_power_data *data) {
+    if (!data || !stateLock) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    if (!stateReady) {
+        IOLockUnlock(stateLock);
+        return kIOReturnNotReady;
+    }
+    const bool powered = radioState.powered != 0;
+    IOLockUnlock(stateLock);
+    bzero(data, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->num_radios = 1;
+    data->power_state[0] = powered ? APPLE80211_POWER_ON : APPLE80211_POWER_OFF;
+    return kIOReturnSuccess;
+}
+
+IOReturn AICAirPortController::publishRadioState(
+    const AICNativeRadioState &state) {
+    if (!stateLock || !AICNativeRadioStateValid(state)) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    radioState = state;
+    stateReady = true;
+    IOLockUnlock(stateLock);
+    return kIOReturnSuccess;
+}
+
+extern "C" IOReturn AICNativePublishState(
+    IOService *service, const AICNativeRadioState *state) {
+    if (!service || !state) return kIOReturnBadArgument;
+    AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
+    if (!controller) return kIOReturnBadArgument;
+    return controller->publishRadioState(*state);
 }
 
 IOReturn AICAirPortController::setPOWER(

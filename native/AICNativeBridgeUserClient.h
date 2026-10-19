@@ -2,7 +2,7 @@
 
 #include <IOKit/IOUserClient.h>
 
-// Compile-only control-plane experiment. No data or radio commands are exposed.
+// Compile-only control plane. It accepts radio state, never USB/RF commands.
 class AICNativeBridgeUserClient final : public IOUserClient {
     OSDeclareDefaultStructors(AICNativeBridgeUserClient)
 
