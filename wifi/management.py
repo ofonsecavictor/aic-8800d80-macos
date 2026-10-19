@@ -101,7 +101,9 @@ def action_frames(data):
     """Yield (vif_index, raw_80211_frame) for valid action-frame records.
 
     The 60-byte header and flags layout follow the pinned AIC Linux USB driver.
-    Unknown VIF index 0xff is retained; consumers must not treat it as a VIF.
+    Invalid/unspecified VIF index 0xff is retained. The reference Linux RX
+    path fans management frames with this index out to active VIFs; consumers
+    must not interpret it as an assigned firmware VIF.
     """
     offset = 0
     while offset < len(data):
