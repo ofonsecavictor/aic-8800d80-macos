@@ -3,8 +3,6 @@
     IOReturn getPOWERSAVE(apple80211_powersave_data*) override { return kIOReturnUnsupported; }
     IOReturn getTXPOWER(apple80211_txpower_data*) override { return kIOReturnUnsupported; }
     IOReturn getRATE(apple80211_rate_data*) override { return kIOReturnUnsupported; }
-    IOReturn getOP_MODE(apple80211_opmode_data*) override { return kIOReturnUnsupported; }
-    IOReturn getRSSI(apple80211_rssi_data*) override { return kIOReturnUnsupported; }
     IOReturn getSUPPORTED_CHANNELS(apple80211_sup_channel_data*) override { return kIOReturnUnsupported; }
     IOReturn getGUARD_INTERVAL(apple80211_guard_interval_data*) override { return kIOReturnUnsupported; }
     IOReturn getMCS(apple80211_mcs_data*) override { return kIOReturnUnsupported; }
@@ -39,7 +37,6 @@
     IOReturn getBEACON_INFO(apple80211_beacon_info_t*) override { return kIOReturnUnsupported; }
     IOReturn getCHIP_POWER_RANGE(apple80211_chip_power_limit*) override { return kIOReturnUnsupported; }
     IOReturn getNSS(apple80211_nss_data*) override { return kIOReturnUnsupported; }
-    IOReturn getHW_ADDR(apple80211_hw_mac_address*) override { return kIOReturnUnsupported; }
     IOReturn getCHIP_DIAGS(appl80211_chip_diags_data*) override { return kIOReturnUnsupported; }
     IOReturn getHP2P_CTRL(apple80211_hp2p_ctrl*) override { return kIOReturnUnsupported; }
     IOReturn getBSS_BLACKLIST(bss_blacklist*) override { return kIOReturnUnsupported; }

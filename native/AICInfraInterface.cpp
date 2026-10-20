@@ -1,6 +1,7 @@
 #include "AICInfraInterface.h"
 #include "AICNativeBridgeProtocol.h"
 #include "AICWCLScanRequest.h"
+#include "AICWCLHardwareAddress.h"
 
 extern "C" IOReturn AICNativeCopyRadioState(
     IOService *service, AICNativeRadioState *state);
@@ -41,6 +42,41 @@ IOReturn AICInfraInterface::getCHANNEL(apple80211_channel_data *data) {
     data->channel.channel = state.channel;
     data->channel.flags = state.channel <= 14 ? APPLE80211_C_FLAG_2GHZ
                                                : APPLE80211_C_FLAG_5GHZ;
+    return kIOReturnSuccess;
+}
+
+IOReturn AICInfraInterface::getOP_MODE(apple80211_opmode_data *data) {
+    if (!data) return kIOReturnBadArgument;
+    bzero(data, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->op_mode = APPLE80211_M_STA;
+    return kIOReturnSuccess;
+}
+
+IOReturn AICInfraInterface::getRSSI(apple80211_rssi_data *data) {
+    if (!data || !radioProvider) return kIOReturnBadArgument;
+    AICNativeRadioState state = {};
+    const IOReturn status = AICNativeCopyRadioState(radioProvider, &state);
+    if (status != kIOReturnSuccess) return status;
+    if (!state.associated) return kIOReturnNotReady;
+    bzero(data, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    data->num_radios = 1;
+    data->rssi_unit = APPLE80211_UNIT_DBM;
+    data->rssi[0] = state.rssi_dbm;
+    data->aggregate_rssi = state.rssi_dbm;
+    return kIOReturnSuccess;
+}
+
+IOReturn AICInfraInterface::getHW_ADDR(apple80211_hw_mac_address *data) {
+    if (!data || !radioProvider) return kIOReturnBadArgument;
+    AICNativeRadioState state = {};
+    const IOReturn status = AICNativeCopyRadioState(radioProvider, &state);
+    if (status != kIOReturnSuccess) return status;
+    AICWCLHardwareAddress encoded = {};
+    if (!AICEncodeWCLHardwareAddress(state.mac, encoded))
+        return kIOReturnNotReady;
+    memcpy(data, &encoded, sizeof(encoded));
     return kIOReturnSuccess;
 }
 

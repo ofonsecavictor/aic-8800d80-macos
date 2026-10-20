@@ -24,11 +24,13 @@ cleanup() {
     /bin/rm -f "$stage/AICAirPortController-headless.o"
     /bin/rm -f "$stage/AICNativeBridgeUserClient.o"
     /bin/rm -f "$stage/AICInfraInterface.o"
+    /bin/rm -f "$stage/AICNativeEthernetInterface.o"
     /bin/rm -f "$stage/AICProbe" "$stage/AICHeadlessProbe" "$stage/undefined.txt"
     /bin/rm -f "$stage/native_bridge_protocol_test"
     /bin/rm -f "$stage/native_scan_request_test"
     /bin/rm -f "$stage/native_wcl_beacon_test"
     /bin/rm -f "$stage/native_scan_mailbox_test"
+    /bin/rm -f "$stage/native_wcl_hardware_address_test"
     /bin/rm -f "$stage/native_startup_policy_test"
     /bin/rm -f "$stage/exports.txt" "$stage/missing.txt"
     /bin/rm -f "$stage/diagnostics.txt"
@@ -66,6 +68,11 @@ echo 'Formato WCL de resultado de varredura: testes locais OK.'
     "$repo_dir/tests/native_scan_mailbox_test.cpp"
 "$stage/native_scan_mailbox_test"
 echo 'Ciclo de vida WCL de varredura: testes locais OK.'
+/usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
+    -o "$stage/native_wcl_hardware_address_test" \
+    "$repo_dir/tests/native_wcl_hardware_address_test.cpp"
+"$stage/native_wcl_hardware_address_test"
+echo 'Endereço MAC WCL nativo: teste local OK.'
 
 /usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
     -mkernel -c -o "$stage/AICAirPortController.o" \
@@ -108,17 +115,27 @@ echo 'Ciclo de vida WCL de varredura: testes locais OK.'
     "$repo_dir/native/AICInfraInterface.cpp"
 /usr/bin/file "$stage/AICInfraInterface.o"
 
+/usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
+    -mkernel -c -o "$stage/AICNativeEthernetInterface.o" \
+    -Wno-deprecated-declarations -Wno-invalid-offsetof \
+    -Wno-inconsistent-missing-override \
+    -DKERNEL=1 -DAIRPORT_WCL=1 -D__PRIVATE_SPI__=1 -DIO80211FAMILY_V2=1 \
+    -D__IO80211_TARGET=__MAC_15_2 -include "$1/apple_private_spi.h" \
+    -I"$(dirname "$1")" -I"$1" -I"$2" -I"$kernel_headers" \
+    "$repo_dir/native/AICNativeEthernetInterface.cpp"
+/usr/bin/file "$stage/AICNativeEthernetInterface.o"
+
 # Dynamic lookup only creates a Mach-O kext shape; it does not resolve an ABI.
 /usr/bin/xcrun ld -kext -arch x86_64 -undefined dynamic_lookup \
     -o "$stage/AICProbe" \
     "$stage/AICAirPortController.o" "$stage/AICNativeBridgeUserClient.o" \
-    "$stage/AICInfraInterface.o" \
+    "$stage/AICInfraInterface.o" "$stage/AICNativeEthernetInterface.o" \
     "$(dirname "$2")/Library/x86_64/libkmod.a"
 /usr/bin/file "$stage/AICProbe"
 /usr/bin/xcrun ld -kext -arch x86_64 -undefined dynamic_lookup \
     -o "$stage/AICHeadlessProbe" \
     "$stage/AICAirPortController-headless.o" "$stage/AICNativeBridgeUserClient.o" \
-    "$stage/AICInfraInterface.o" \
+    "$stage/AICInfraInterface.o" "$stage/AICNativeEthernetInterface.o" \
     "$(dirname "$2")/Library/x86_64/libkmod.a"
 /usr/bin/file "$stage/AICHeadlessProbe"
 
