@@ -120,9 +120,7 @@
     IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode*) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_JOIN_ABORT(void*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_TRIGGER_CC(triggerCC*) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_ASSOCIATE(apple80211AssocCandidates*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_QOS_PARAMS(apple80211_wcl_qos_params*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LINK_UP_DONE(void*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime*) override { return kIOReturnUnsupported; }

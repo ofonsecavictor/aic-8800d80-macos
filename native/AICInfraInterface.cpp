@@ -2,12 +2,16 @@
 #include "AICNativeBridgeProtocol.h"
 #include "AICWCLScanRequest.h"
 #include "AICWCLHardwareAddress.h"
+#include "AICWCLJoinRequest.h"
 
 extern "C" IOReturn AICNativeCopyRadioState(
     IOService *service, AICNativeRadioState *state);
 extern "C" IOReturn AICNativeBeginScan(
     IOService *service, const AICWCLScanRequest *request);
 extern "C" IOReturn AICNativeAbortScan(IOService *service);
+extern "C" IOReturn AICNativeBeginJoin(
+    IOService *service, const AICWCLJoinRequest *request);
+extern "C" IOReturn AICNativeAbortJoin(IOService *service);
 
 OSDefineMetaClassAndStructors(AICInfraInterface, IO80211InfraProtocol)
 
@@ -93,5 +97,22 @@ IOReturn AICInfraInterface::setWCL_SCAN_REQ(apple80211ScanRequest *request) {
 
 IOReturn AICInfraInterface::setWCL_SCAN_ABORT(void *) {
     return radioProvider ? AICNativeAbortScan(radioProvider)
+                         : kIOReturnNotReady;
+}
+
+IOReturn AICInfraInterface::setWCL_ASSOCIATE(
+    apple80211AssocCandidates *request) {
+    AICWCLJoinRequest decoded = {};
+    if (!AICDecodeWCLJoinRequest(request, kAICWCLJoinRequestSize, decoded))
+        return kIOReturnUnsupported;
+    const IOReturn status = radioProvider
+        ? AICNativeBeginJoin(radioProvider, &decoded) : kIOReturnNotReady;
+    volatile uint8_t *secret = reinterpret_cast<volatile uint8_t *>(&decoded);
+    for (size_t i = 0; i < sizeof(decoded); ++i) secret[i] = 0;
+    return status;
+}
+
+IOReturn AICInfraInterface::setWCL_JOIN_ABORT(void *) {
+    return radioProvider ? AICNativeAbortJoin(radioProvider)
                          : kIOReturnNotReady;
 }

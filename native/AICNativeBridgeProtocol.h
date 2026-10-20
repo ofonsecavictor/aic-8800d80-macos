@@ -1,8 +1,10 @@
 #pragma once
 
 #include <stdint.h>
+#include "AICWCLJoinRequest.h"
 
-// Shared with the future user-space AIC service. No credentials are included.
+// Shared with the future user-space AIC service. Ordinary state/scan messages
+// contain no credentials; the separate one-shot join message contains a PMK.
 enum {
     kAICNativeBridgeVersion = 2,
     kAICNativeGetVersion = 0,
@@ -14,6 +16,8 @@ enum {
     kAICNativeSubmitScanResult = 6,
     kAICNativeCompleteScan = 7,
     kAICNativeEnableScanBridge = 8,
+    kAICNativeNextJoin = 9,
+    kAICNativeCompleteJoin = 10,
     kAICNativeSetPower = 1,
     kAICNativeFrameEthernet = 1,
     kAICNativeFrameAction = 2,
@@ -68,6 +72,29 @@ typedef struct AICNativeScanCompletion {
     uint32_t reserved;
 } AICNativeScanCompletion;
 
+// One-shot PMK handoff for a WCL association request. Only the privileged
+// USB-owning service may open the user client. Neither side persists this
+// structure, and the kernel mailbox erases its copy when delivered/aborted.
+typedef struct AICNativeJoinRequest {
+    uint32_t version;
+    uint32_t sequence;
+    uint32_t ssidLength;
+    uint32_t channelSpec;
+    uint32_t rsnLength;
+    uint8_t ssid[32];
+    uint8_t bssid[6];
+    uint8_t pmk[32];
+    uint8_t rsn[257];
+    uint8_t reserved;
+} AICNativeJoinRequest;
+
+typedef struct AICNativeJoinCompletion {
+    uint32_t version;
+    uint32_t sequence;
+    uint32_t status;
+    uint32_t reserved;
+} AICNativeJoinCompletion;
+
 // Ephemeral packet transport only. No frame is logged or written to disk.
 // An action frame is a full, unprotected 802.11 management frame, not AWDL
 // payload interpretation. VIF 0xff is allowed only for RX fan-out records.
@@ -88,6 +115,8 @@ static_assert(sizeof(AICNativeCommand) == 16, "command ABI size");
 static_assert(sizeof(AICNativeScanRequest) == 96, "scan request ABI size");
 static_assert(sizeof(AICNativeScanResult) == 1100, "scan result ABI size");
 static_assert(sizeof(AICNativeScanCompletion) == 16, "scan completion ABI size");
+static_assert(sizeof(AICNativeJoinRequest) == 348, "join request ABI size");
+static_assert(sizeof(AICNativeJoinCompletion) == 16, "join completion ABI size");
 static_assert(sizeof(AICNativeFrame) == 1540, "frame ABI size");
 
 inline bool AICNativeFrameValid(const AICNativeFrame &frame, bool fromService) {
@@ -131,6 +160,30 @@ inline bool AICNativeScanRequestValid(const AICNativeScanRequest &request) {
 
 inline bool AICNativeScanCompletionValid(
     const AICNativeScanCompletion &completion) {
+    return completion.version == kAICNativeBridgeVersion &&
+           completion.sequence != 0 && completion.reserved == 0;
+}
+
+inline bool AICNativeJoinRequestValid(const AICNativeJoinRequest &request) {
+    const uint32_t channel = request.channelSpec & 0xff;
+    if (request.version != kAICNativeBridgeVersion || !request.sequence ||
+        !request.ssidLength || request.ssidLength > 32 ||
+        !channel || channel > 196 ||
+        request.channelSpec != (channel | (channel <= 14 ? 0x1000u : 0xd000u)) ||
+        request.rsnLength > 257 || request.reserved ||
+        (request.bssid[0] & 1) ||
+        !AICJoinRSNSupported(request.rsn, request.rsnLength)) return false;
+    bool nonzeroBssid = false;
+    for (unsigned i = 0; i < 6; ++i) nonzeroBssid |= request.bssid[i] != 0;
+    if (!nonzeroBssid) return false;
+    for (uint32_t i = request.ssidLength; i < 32; ++i)
+        if (request.ssid[i]) return false;
+    for (uint32_t i = request.rsnLength; i < 257; ++i)
+        if (request.rsn[i]) return false;
+    return true;
+}
+
+inline bool AICNativeJoinCompletionValid(const AICNativeJoinCompletion &completion) {
     return completion.version == kAICNativeBridgeVersion &&
            completion.sequence != 0 && completion.reserved == 0;
 }

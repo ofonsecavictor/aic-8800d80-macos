@@ -30,6 +30,7 @@ cleanup() {
     /bin/rm -f "$stage/native_bridge_protocol_test"
     /bin/rm -f "$stage/native_scan_request_test"
     /bin/rm -f "$stage/native_join_request_test"
+    /bin/rm -f "$stage/native_join_mailbox_test"
     /bin/rm -f "$stage/native_wcl_beacon_test"
     /bin/rm -f "$stage/native_scan_mailbox_test"
     /bin/rm -f "$stage/native_wcl_hardware_address_test"
@@ -65,6 +66,11 @@ echo 'Decodificador WCL de varredura: testes locais OK.'
     "$repo_dir/tests/native_join_request_test.cpp"
 "$stage/native_join_request_test"
 echo 'Decodificador WCL de conexão WPA2: testes locais OK.'
+/usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
+    -o "$stage/native_join_mailbox_test" \
+    "$repo_dir/tests/native_join_mailbox_test.cpp"
+"$stage/native_join_mailbox_test"
+echo 'Handoff de conexão WPA2: testes locais OK.'
 /usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
     -o "$stage/native_wcl_beacon_test" \
     "$repo_dir/tests/native_wcl_beacon_test.cpp"

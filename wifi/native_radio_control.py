@@ -5,6 +5,8 @@ from layouts import frequency_to_channel
 from native_scan_bridge import (ScanRequest, completion as scan_completion,
                                 decode_request as decode_scan_request,
                                 encode_result as encode_scan_result)
+from native_join_bridge import (JoinRequest, decode_join_request,
+                                join_completion)
 
 VERSION = 2
 NOT_FOUND = 0
@@ -254,6 +256,30 @@ class NativeRadioPublisher:
             self.connect, 7, c.byref(result), c.sizeof(result), None, None)
         if status:
             raise RuntimeError('AIC native scan complete: %08x' % status)
+
+    def next_join_request(self):
+        if not self.connect:
+            return None
+        request = JoinRequest()
+        size = c.c_size_t(c.sizeof(request))
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 9, None, 0, c.byref(request), c.byref(size))
+        if status == NOT_READY:
+            return None
+        if status or size.value != c.sizeof(request):
+            c.memset(c.addressof(request), 0, c.sizeof(request))
+            raise RuntimeError('AIC native join read: %08x' % status)
+        return decode_join_request(request)
+
+    def complete_join(self, sequence, status_code=0):
+        if not self.connect:
+            raise RuntimeError('AIC native control is closed')
+        completion = join_completion(sequence, status_code)
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 10, c.byref(completion), c.sizeof(completion),
+            None, None)
+        if status:
+            raise RuntimeError('AIC native join complete: %08x' % status)
 
     def safe_publish(self, powered, target, mac):
         if not self.connect:

@@ -19,6 +19,16 @@ extern "C" IOReturn AICNativeCompleteScan(
     IOService *service, const AICNativeScanCompletion *completion);
 extern "C" IOReturn AICNativeSetScanBridgeEnabled(
     IOService *service, IOUserClient *client, bool enabled);
+extern "C" IOReturn AICNativeNextJoinRequest(
+    IOService *service, IOUserClient *client, AICNativeJoinRequest *request);
+extern "C" IOReturn AICNativeCompleteJoin(
+    IOService *service, IOUserClient *client,
+    const AICNativeJoinCompletion *completion);
+
+static void AICWipeJoin(void *buffer, size_t length) {
+    volatile uint8_t *p = static_cast<volatile uint8_t *>(buffer);
+    while (length--) *p++ = 0;
+}
 
 OSDefineMetaClassAndStructors(AICNativeBridgeUserClient, IOUserClient)
 
@@ -132,6 +142,32 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             arguments->structureInputSize || arguments->structureOutputSize)
             return kIOReturnBadArgument;
         return AICNativeSetScanBridgeEnabled(getService(), this, true);
+    }
+    if (selector == kAICNativeNextJoin) {
+        if (arguments->scalarInputCount || arguments->scalarOutputCount ||
+            arguments->structureInputSize || !arguments->structureOutput ||
+            arguments->structureOutputSize < sizeof(AICNativeJoinRequest))
+            return kIOReturnBadArgument;
+        AICNativeJoinRequest request = {};
+        IOReturn status = AICNativeNextJoinRequest(getService(), this, &request);
+        if (status == kIOReturnSuccess) {
+            if (!AICNativeJoinRequestValid(request)) status = kIOReturnError;
+            else {
+                bcopy(&request, arguments->structureOutput, sizeof(request));
+                arguments->structureOutputSize = sizeof(request);
+            }
+        }
+        AICWipeJoin(&request, sizeof(request));
+        return status;
+    }
+    if (selector == kAICNativeCompleteJoin) {
+        if (arguments->scalarInputCount || arguments->scalarOutputCount ||
+            arguments->structureOutputSize ||
+            arguments->structureInputSize != sizeof(AICNativeJoinCompletion) ||
+            !arguments->structureInput) return kIOReturnBadArgument;
+        AICNativeJoinCompletion completion = {};
+        bcopy(arguments->structureInput, &completion, sizeof(completion));
+        return AICNativeCompleteJoin(getService(), this, &completion);
     }
     return kIOReturnUnsupported;
 }

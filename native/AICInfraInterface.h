@@ -3,8 +3,8 @@
 #include <IO80211ControllerV2.h>
 #include <macOS15/IO80211InfraProtocol.h>
 
-// Offline-only WCL protocol interface. All WCL operations fail closed until
-// their radio/service transport exists; there is no registration or AWDL yet.
+// Offline-only WCL protocol interface. Scan and WPA2 join handoffs are compiled
+// only in the never-packaged native variant; no radio connection is proven.
 class AICInfraInterface final : public IO80211InfraProtocol {
     OSDeclareDefaultStructors(AICInfraInterface)
 
@@ -18,6 +18,8 @@ public:
     IOReturn getHW_ADDR(apple80211_hw_mac_address *data) override;
     IOReturn setWCL_SCAN_REQ(apple80211ScanRequest *request) override;
     IOReturn setWCL_SCAN_ABORT(void *request) override;
+    IOReturn setWCL_ASSOCIATE(apple80211AssocCandidates *request) override;
+    IOReturn setWCL_JOIN_ABORT(void *request) override;
 
 #include "AICInfraProtocolStubs.inc"
 

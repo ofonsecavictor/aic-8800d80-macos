@@ -18,7 +18,7 @@ struct AICWCLJoinRequest {
 };
 
 inline uint16_t AICJoinRead16(const uint8_t *p) {
-    return uint16_t(p[0]) | (uint16_t(p[1]) << 8);
+    return uint16_t(uint16_t(p[0]) | (uint16_t(p[1]) << 8));
 }
 
 inline uint32_t AICJoinRead32(const uint8_t *p) {

@@ -2,6 +2,7 @@
 #include "../native/AICNativePowerMailbox.h"
 #include "../native/AICNativeFrameMailbox.h"
 #include "../native/AICNativeCapabilityBits.h"
+#include "../native/AICWCLConnectionEvent.h"
 
 #include <assert.h>
 
@@ -94,6 +95,29 @@ int main() {
     assert(AICNativeScanCompletionValid(completion));
     completion.reserved = 1;
     assert(!AICNativeScanCompletionValid(completion));
+
+    AICNativeJoinRequest join = {};
+    join.version = kAICNativeBridgeVersion;
+    join.sequence = 8;
+    join.ssidLength = 4;
+    join.ssid[0] = 't';
+    join.channelSpec = 0xd02c;
+    join.bssid[0] = 2;
+    join.bssid[5] = 1;
+    assert(AICNativeJoinRequestValid(join));
+    join.ssid[5] = 'X';
+    assert(!AICNativeJoinRequestValid(join));
+    join.ssid[5] = 0;
+    join.bssid[0] = 3;
+    assert(!AICNativeJoinRequestValid(join));
+    join.bssid[0] = 2;
+    AICNativeJoinCompletion joined = {kAICNativeBridgeVersion, 8, 0, 0};
+    assert(AICNativeJoinCompletionValid(joined));
+    joined.reserved = 1;
+    assert(!AICNativeJoinCompletionValid(joined));
+    const AICWCLConnectionEvent event = AICMakeWCLConnectionEvent(
+        join.bssid, true, 0);
+    assert(event.status == 0 && event.peers[0].bssid[5] == 1);
 
     AICNativeFrame frame = {};
     frame.version = kAICNativeBridgeVersion;
