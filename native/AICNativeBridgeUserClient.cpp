@@ -24,6 +24,8 @@ extern "C" IOReturn AICNativeNextJoinRequest(
 extern "C" IOReturn AICNativeCompleteJoin(
     IOService *service, IOUserClient *client,
     const AICNativeJoinCompletion *completion);
+extern "C" IOReturn AICNativeNextLeaveCommand(
+    IOService *service, IOUserClient *client, AICNativeCommand *command);
 
 static void AICWipeJoin(void *buffer, size_t length) {
     volatile uint8_t *p = static_cast<volatile uint8_t *>(buffer);
@@ -168,6 +170,20 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
         AICNativeJoinCompletion completion = {};
         bcopy(arguments->structureInput, &completion, sizeof(completion));
         return AICNativeCompleteJoin(getService(), this, &completion);
+    }
+    if (selector == kAICNativeNextLeave) {
+        if (arguments->scalarInputCount || arguments->scalarOutputCount ||
+            arguments->structureInputSize || !arguments->structureOutput ||
+            arguments->structureOutputSize < sizeof(AICNativeCommand))
+            return kIOReturnBadArgument;
+        AICNativeCommand command = {};
+        IOReturn status = AICNativeNextLeaveCommand(getService(), this, &command);
+        if (status != kIOReturnSuccess) return status;
+        if (!AICNativeCommandValid(command) ||
+            command.operation != kAICNativeLeave) return kIOReturnError;
+        bcopy(&command, arguments->structureOutput, sizeof(command));
+        arguments->structureOutputSize = sizeof(command);
+        return kIOReturnSuccess;
     }
     return kIOReturnUnsupported;
 }

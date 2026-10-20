@@ -18,7 +18,9 @@ enum {
     kAICNativeEnableScanBridge = 8,
     kAICNativeNextJoin = 9,
     kAICNativeCompleteJoin = 10,
+    kAICNativeNextLeave = 11,
     kAICNativeSetPower = 1,
+    kAICNativeLeave = 2,
     kAICNativeFrameEthernet = 1,
     kAICNativeFrameAction = 2,
     kAICNativeFrameMaxBytes = 1514,
@@ -141,8 +143,9 @@ inline bool AICNativeFrameValid(const AICNativeFrame &frame, bool fromService) {
 
 inline bool AICNativeCommandValid(const AICNativeCommand &command) {
     return command.version == kAICNativeBridgeVersion &&
-           command.operation == kAICNativeSetPower &&
-           command.sequence != 0 && command.value <= 1;
+           command.sequence != 0 &&
+           ((command.operation == kAICNativeSetPower && command.value <= 1) ||
+            (command.operation == kAICNativeLeave && command.value == 0));
 }
 
 inline bool AICNativeScanRequestValid(const AICNativeScanRequest &request) {

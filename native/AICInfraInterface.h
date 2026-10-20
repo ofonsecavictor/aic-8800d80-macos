@@ -20,6 +20,8 @@ public:
     IOReturn setWCL_SCAN_ABORT(void *request) override;
     IOReturn setWCL_ASSOCIATE(apple80211AssocCandidates *request) override;
     IOReturn setWCL_JOIN_ABORT(void *request) override;
+    IOReturn setWCL_LEAVE_NETWORK(
+        apple80211_leave_network *request) override;
     IOReturn setWCL_LINK_STATE_UPDATE(
         apple80211_wcl_update_link_state *request) override;
 

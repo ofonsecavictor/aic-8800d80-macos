@@ -12,6 +12,7 @@ VERSION = 2
 NOT_FOUND = 0
 NOT_READY = 0xe00002d8
 SET_POWER = 1
+LEAVE_NETWORK = 2
 ETHERNET_FRAME = 1
 ACTION_FRAME = 2
 
@@ -90,6 +91,13 @@ def decode_command(command):
             not command.sequence or command.value not in (0, 1)):
         raise ValueError('Invalid AIC native command')
     return command.sequence, bool(command.value)
+
+
+def decode_leave_command(command):
+    if (command.version != VERSION or command.operation != LEAVE_NETWORK or
+            not command.sequence or command.value != 0):
+        raise ValueError('Invalid AIC native leave command')
+    return command.sequence
 
 
 def state_for(powered, target, mac):
@@ -192,6 +200,19 @@ class NativeRadioPublisher:
         if status or size.value != c.sizeof(command):
             raise RuntimeError('AIC native command read: %08x' % status)
         return decode_command(command)
+
+    def next_leave_command(self):
+        if not self.connect:
+            return None
+        command = Command()
+        size = c.c_size_t(c.sizeof(command))
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 11, None, 0, c.byref(command), c.byref(size))
+        if status == NOT_READY:
+            return None
+        if status or size.value != c.sizeof(command):
+            raise RuntimeError('AIC native leave read: %08x' % status)
+        return decode_leave_command(command)
 
     def submit_received_frame(self, frame):
         if not self.connect:

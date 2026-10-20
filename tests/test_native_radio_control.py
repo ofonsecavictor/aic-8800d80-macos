@@ -2,7 +2,7 @@ import ctypes
 import unittest
 
 from native_radio_control import (Command, NativeRadioPublisher, RadioState,
-                                  decode_command, state_for, NOT_READY,
+                                  decode_command, decode_leave_command, state_for, NOT_READY,
                                   ACTION_FRAME, ETHERNET_FRAME,
                                   frame_for_service_rx, validate_frame)
 from native_scan_bridge import ScanRequest
@@ -82,6 +82,15 @@ class NativeRadioControlTests(unittest.TestCase):
         self.assertEqual(NativeRadioPublisher(io, 7).next_power_command(),
                          (7, False))
         self.assertEqual(io.calls[0][:3], (7, 2, 0))
+
+    def test_reads_one_shot_leave_command(self):
+        io = FakeIOKit(command=Command(2, 2, 9, 0))
+        self.assertEqual(NativeRadioPublisher(io, 7).next_leave_command(), 9)
+        self.assertEqual(io.calls[0][:3], (7, 11, 0))
+        self.assertIsNone(NativeRadioPublisher(FakeIOKit(status=NOT_READY), 7)
+                          .next_leave_command())
+        with self.assertRaises(ValueError):
+            decode_leave_command(Command(2, 1, 9, 0))
 
     def test_scan_handoff_uses_bounded_selectors(self):
         request = ScanRequest()

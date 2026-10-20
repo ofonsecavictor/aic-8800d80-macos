@@ -2,6 +2,7 @@
 #include "../native/AICNativePowerMailbox.h"
 #include "../native/AICNativeFrameMailbox.h"
 #include "../native/AICNativeCapabilityBits.h"
+#include "../native/AICNativeLeaveMailbox.h"
 #include "../native/AICWCLConnectionEvent.h"
 
 #include <assert.h>
@@ -70,7 +71,28 @@ int main() {
     assert(!AICNativeCommandValid(command));
     command.sequence = 1;
     command.operation = 2;
+    assert(AICNativeCommandValid(command));
+    command.value = 1;
     assert(!AICNativeCommandValid(command));
+    command.value = 0;
+    command.operation = 3;
+    assert(!AICNativeCommandValid(command));
+
+    AICNativeLeaveMailbox leave;
+    AICNativeCommand leaveCommand = {};
+    assert(!leave.take(&leaveCommand));
+    leave.request();
+    leave.request();
+    assert(leave.take(&leaveCommand));
+    assert(AICNativeCommandValid(leaveCommand));
+    assert(leaveCommand.operation == kAICNativeLeave);
+    const uint32_t firstLeave = leaveCommand.sequence;
+    assert(!leave.take(&leaveCommand));
+    leave.request();
+    assert(leave.take(&leaveCommand) && leaveCommand.sequence != firstLeave);
+    leave.request();
+    leave.clear();
+    assert(!leave.take(&leaveCommand));
 
     AICNativeScanRequest scan = {};
     scan.version = kAICNativeBridgeVersion;

@@ -12,6 +12,7 @@ extern "C" IOReturn AICNativeAbortScan(IOService *service);
 extern "C" IOReturn AICNativeBeginJoin(
     IOService *service, const AICWCLJoinRequest *request);
 extern "C" IOReturn AICNativeAbortJoin(IOService *service);
+extern "C" IOReturn AICNativeRequestLeave(IOService *service);
 
 OSDefineMetaClassAndStructors(AICInfraInterface, IO80211InfraProtocol)
 
@@ -114,6 +115,12 @@ IOReturn AICInfraInterface::setWCL_ASSOCIATE(
 
 IOReturn AICInfraInterface::setWCL_JOIN_ABORT(void *) {
     return radioProvider ? AICNativeAbortJoin(radioProvider)
+                         : kIOReturnNotReady;
+}
+
+IOReturn AICInfraInterface::setWCL_LEAVE_NETWORK(
+    apple80211_leave_network *) {
+    return radioProvider ? AICNativeRequestLeave(radioProvider)
                          : kIOReturnNotReady;
 }
 

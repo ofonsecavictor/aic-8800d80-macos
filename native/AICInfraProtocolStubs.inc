@@ -112,7 +112,6 @@
     IOReturn setSENSING_ENABLE(apple80211_sensing_enable_t*) override { return kIOReturnUnsupported; }
     IOReturn setSENSING_DISABLE(apple80211_sensing_disable_t*) override { return kIOReturnUnsupported; }
     IOReturn set6G_MODE(apple80211_6G_mode*) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_LEAVE_NETWORK(apple80211_leave_network*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_REASSOC(apple80211_reassoc*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_SET_ROAM_LOCK(apple80211_set_roam_lock*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config*) override { return kIOReturnUnsupported; }

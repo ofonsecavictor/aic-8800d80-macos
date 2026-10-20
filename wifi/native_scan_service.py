@@ -17,6 +17,10 @@ SCAN_FAILED = 0xe00002bc
 SCAN_ABORTED = 0xe00002eb
 
 
+class NativeLeaveRequested(RuntimeError):
+    pass
+
+
 class NativeScanSession:
     def __init__(self, wifi, bridge, stop=None):
         self.wifi = wifi
@@ -27,6 +31,19 @@ class NativeScanSession:
         self.last_sequence = None
         self.last_join_sequence = None
         self.frame_sequence = 0
+        self.powered = True
+
+    def poll_control(self, active=False):
+        power = self.bridge.next_power_command()
+        if power is not None:
+            _, powered = power
+            changed = powered != self.powered
+            self.powered = powered
+            if changed or not powered:
+                self.bridge.publish(powered, None, self.wifi.mac)
+        leave = self.bridge.next_leave_command()
+        if active and (leave is not None or not self.powered):
+            raise NativeLeaveRequested('AIC session cancelled by macOS')
 
     def prepare(self, timeout=10):
         info = self.wifi.identity()
@@ -51,6 +68,7 @@ class NativeScanSession:
             raise RuntimeError('Repeated native AIC scan sequence')
         previous_beacon = self.wifi.scan_observer
         previous_control = self.wifi.control_observer
+        previous_poll = self.wifi.kernel_poll
         completion_attempted = False
 
         def beacon(item):
@@ -70,7 +88,9 @@ class NativeScanSession:
 
         self.wifi.scan_observer = beacon
         self.wifi.control_observer = control
+        self.wifi.kernel_poll = lambda: self.poll_control(active=True)
         try:
+            self.poll_control(active=True)
             self.wifi.scan(scan_frequencies=request['frequencies'],
                            publish_results=False)
             if not completion_attempted:
@@ -80,7 +100,8 @@ class NativeScanSession:
             if not completion_attempted:
                 try:
                     self.bridge.complete_scan(sequence,
-                                              SCAN_ABORTED if isinstance(error, KeyboardInterrupt)
+                                              SCAN_ABORTED if isinstance(error, (KeyboardInterrupt,
+                                                                                 NativeLeaveRequested))
                                               else SCAN_FAILED)
                 except RuntimeError:
                     pass  # Kernel timeout or teardown is already authoritative.
@@ -88,6 +109,7 @@ class NativeScanSession:
         finally:
             self.wifi.scan_observer = previous_beacon
             self.wifi.control_observer = previous_control
+            self.wifi.kernel_poll = previous_poll
 
     def execute_join(self, request):
         sequence = request['sequence']
@@ -98,10 +120,12 @@ class NativeScanSession:
         previous_target_bssid = getattr(self.wifi, 'target_bssid', None)
         previous_target_band = getattr(self.wifi, 'target_band', None)
         previous_scan_observer = self.wifi.scan_observer
+        previous_poll = self.wifi.kernel_poll
         completed = False
 
         def radio(powered, target, mac):
-            self.bridge.publish(powered, target, mac)
+            available = powered and self.powered
+            self.bridge.publish(available, target if available else None, mac)
 
         def connected(vif, station, target, service_eapol):
             nonlocal completed
@@ -114,6 +138,7 @@ class NativeScanSession:
             self.wifi.active_vif = vif
             try:
                 while not self.stop.is_set():
+                    self.poll_control(active=True)
                     for frame in self.wifi.receive_native():
                         if frame[12:14] == b'\x88\x8e':
                             service_eapol(frame)
@@ -141,9 +166,11 @@ class NativeScanSession:
         self.wifi.radio_observer = radio
         self.wifi.kernel_session = connected
         self.wifi.scan_observer = lambda _item: None  # Preserve beacon IEs for WPA2 validation.
+        self.wifi.kernel_poll = lambda: self.poll_control(active=True)
         self.wifi.target_bssid = request['bssid']
         self.wifi.target_band = 0 if request['frequency'] < 3000 else 1
         try:
+            self.poll_control(active=True)
             self.wifi.scan(request['ssid'], request['key'],
                            scan_frequencies=(request['frequency'],),
                            publish_results=False)
@@ -153,7 +180,8 @@ class NativeScanSession:
             if not completed:
                 try:
                     self.bridge.complete_join(
-                        sequence, SCAN_ABORTED if isinstance(error, KeyboardInterrupt)
+                        sequence, SCAN_ABORTED if isinstance(error, (KeyboardInterrupt,
+                                                                    NativeLeaveRequested))
                         else SCAN_FAILED)
                 except RuntimeError:
                     pass  # Kernel timeout or cancellation is authoritative.
@@ -162,6 +190,7 @@ class NativeScanSession:
             self.wifi.radio_observer = previous_observer
             self.wifi.kernel_session = previous_session
             self.wifi.scan_observer = previous_scan_observer
+            self.wifi.kernel_poll = previous_poll
             self.wifi.target_bssid = previous_target_bssid
             self.wifi.target_band = previous_target_band
             request.pop('key', None)
@@ -170,14 +199,29 @@ class NativeScanSession:
         try:
             self.prepare()
             while not self.stop.is_set():
+                self.poll_control()
                 request = self.bridge.next_scan_request()
                 if request is not None:
-                    self.execute(request)
+                    if not self.powered:
+                        self.bridge.complete_scan(request['sequence'], SCAN_ABORTED)
+                        continue
+                    try:
+                        self.execute(request)
+                    except NativeLeaveRequested:
+                        pass
                     continue
                 join = self.bridge.next_join_request()
                 if join is not None:
+                    if not self.powered:
+                        try:
+                            self.bridge.complete_join(join['sequence'], SCAN_ABORTED)
+                        finally:
+                            join.pop('key', None)
+                        continue
                     try:
                         self.execute_join(join)
+                    except NativeLeaveRequested:
+                        pass
                     except (RuntimeError, ValueError) as error:
                         # A rejected AP or invalid WPA2 handshake should not
                         # make the native service disappear after one attempt.

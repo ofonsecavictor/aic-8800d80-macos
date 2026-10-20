@@ -12,7 +12,7 @@ import re
 
 METHOD = re.compile(r"^\s*virtual IOReturn (\w+)\(([^()]*)\) = 0;\s*$")
 EXPECTED_METHODS = 190
-IMPLEMENTED_SEPARATELY = {"getCHANNEL", "getOP_MODE", "getRSSI", "getHW_ADDR", "setWCL_SCAN_REQ", "setWCL_SCAN_ABORT", "setWCL_ASSOCIATE", "setWCL_JOIN_ABORT", "setWCL_LINK_STATE_UPDATE"}
+IMPLEMENTED_SEPARATELY = {"getCHANNEL", "getOP_MODE", "getRSSI", "getHW_ADDR", "setWCL_SCAN_REQ", "setWCL_SCAN_ABORT", "setWCL_ASSOCIATE", "setWCL_JOIN_ABORT", "setWCL_LEAVE_NETWORK", "setWCL_LINK_STATE_UPDATE"}
 
 
 def generate(header: Path) -> str:

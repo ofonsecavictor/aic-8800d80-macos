@@ -27,6 +27,7 @@
 #include "AICNativeEthernetInterface.h"
 #include "AICNativeScanWire.h"
 #include "AICNativeJoinMailbox.h"
+#include "AICNativeLeaveMailbox.h"
 #include "AICWCLConnectionEvent.h"
 
 class AICNativeUSBProvider final : public IOService {
@@ -146,6 +147,8 @@ public:
                              AICNativeJoinRequest *request);
     IOReturn completeJoin(IOUserClient *client,
                           const AICNativeJoinCompletion &completion);
+    IOReturn requestLeave();
+    IOReturn nextLeaveCommand(IOUserClient *client, AICNativeCommand *command);
     UInt32 outputPacket(mbuf_t packet, void *parameter) override;
 
 private:
@@ -178,6 +181,7 @@ private:
     AICNativeFrameMailbox transmitFrames;
     AICNativeScanMailbox scanMailbox;
     AICNativeJoinMailbox joinMailbox;
+    AICNativeLeaveMailbox leaveMailbox;
     bool scanBridgeEnabled = false;
     IOUserClient *scanOwner = nullptr; // Cleared by owner close or controller teardown.
     uint32_t transmitSequence = 0;
@@ -317,6 +321,11 @@ IOReturn AICAirPortController::updateLinkGated(
     IOLockUnlock(controller->stateLock);
     controller->setLinkStatus(kIONetworkLinkValid |
         (connected ? kIONetworkLinkActive : 0));
+    if (!connected && controller->nativeInterface) {
+        controller->nativeInterface->setCurrentApAddress(nullptr);
+        controller->nativeInterface->setLinkState(
+            kIO80211NetworkLinkDown, 0, false, 0);
+    }
     return kIOReturnSuccess;
 }
 
@@ -423,6 +432,7 @@ void AICAirPortController::detachNativeInterface() {
             joinBSSID, false, kIOReturnAborted);
         postMessage(nativeInterface, 213, &event, sizeof(event), true);
     }
+    leaveMailbox.clear();
     if (stateLock) {
         IOLockLock(stateLock);
         AICNativeEthernetInterface *bsd = bsdInterface;
@@ -474,6 +484,7 @@ void AICAirPortController::joinTimerFired(
     uint8_t bssid[6] = {};
     if (!self->joinMailbox.target(bssid) ||
         !self->joinMailbox.expire(AICNativeUptimeMillis(), nullptr)) return;
+    self->leaveMailbox.request();
     if (self->nativeInterface) {
         AICWCLConnectionEvent event = AICMakeWCLConnectionEvent(
             bssid, false, kIOReturnTimeout);
@@ -486,6 +497,8 @@ enum AICJoinOperation {
     kAICJoinAbort = 2,
     kAICJoinNext = 3,
     kAICJoinComplete = 4,
+    kAICJoinLeave = 5,
+    kAICJoinNextLeave = 6,
 };
 
 IOReturn AICAirPortController::joinGated(
@@ -500,22 +513,42 @@ IOReturn AICAirPortController::joinGated(
         uint8_t bssid[6] = {};
         const bool active = self->joinMailbox.target(bssid);
         self->joinMailbox.abort(nullptr);
+        self->leaveMailbox.request();
         if (active && self->nativeInterface) {
             AICWCLConnectionEvent event = AICMakeWCLConnectionEvent(
                 bssid, false, kIOReturnAborted);
             self->postMessage(self->nativeInterface, 213, &event,
                               sizeof(event), true);
-            self->postMessage(self->nativeInterface, 214, nullptr, 0, true);
         }
+        if (self->nativeInterface)
+            self->postMessage(self->nativeInterface, 214, nullptr, 0, true);
         return kIOReturnSuccess;
     }
     if (!self->nativeStarted || !self->nativeInterface ||
         !self->scanBridgeEnabled || !self->scanOwner ||
         !self->bsdInterface || !self->bsdInterface->getIfnet())
         return kIOReturnNotReady;
-    if ((op == kAICJoinNext || op == kAICJoinComplete) &&
+    if ((op == kAICJoinNext || op == kAICJoinComplete ||
+         op == kAICJoinNextLeave) &&
         client != self->scanOwner) return kIOReturnNotPermitted;
     const uint64_t now = AICNativeUptimeMillis();
+    if (op == kAICJoinLeave) {
+        uint8_t bssid[6] = {};
+        if (self->joinMailbox.target(bssid)) {
+            self->joinMailbox.abort(nullptr);
+            if (self->joinTimer) self->joinTimer->cancelTimeout();
+            AICWCLConnectionEvent event = AICMakeWCLConnectionEvent(
+                bssid, false, kIOReturnAborted);
+            self->postMessage(self->nativeInterface, 213, &event,
+                              sizeof(event), true);
+        }
+        self->leaveMailbox.request();
+        return kIOReturnSuccess;
+    }
+    if (op == kAICJoinNextLeave)
+        return payload && self->leaveMailbox.take(
+            static_cast<AICNativeCommand *>(payload))
+            ? kIOReturnSuccess : kIOReturnNotReady;
     if (op == kAICJoinBegin) {
         if (!payload || self->joinMailbox.active()) return kIOReturnBusy;
         AICNativeScanTicket scan = {};
@@ -598,6 +631,27 @@ IOReturn AICAirPortController::scanGated(
             if (payload != self->scanOwner) return kIOReturnSuccess;
             self->scanBridgeEnabled = false;
             self->scanOwner = nullptr;
+            self->leaveMailbox.clear();
+            // A crashed USB-owning process must not leave a ghost connected
+            // interface or accept packets after its privileged client closes.
+            IOLockLock(self->stateLock);
+            if (self->stateReady) {
+                self->radioState.powered = 0;
+                self->radioState.associated = 0;
+                self->radioState.channel = 0;
+                self->radioState.rssi_dbm = 0;
+                bzero(self->radioState.bssid, sizeof(self->radioState.bssid));
+                self->powerMailbox.observe(false);
+            }
+            self->receivedFrames.clear();
+            self->transmitFrames.clear();
+            IOLockUnlock(self->stateLock);
+            self->setLinkStatus(kIONetworkLinkValid);
+            if (self->nativeInterface) {
+                self->nativeInterface->setCurrentApAddress(nullptr);
+                self->nativeInterface->setLinkState(
+                    kIO80211NetworkLinkDown, 0, false, 0);
+            }
             if (self->joinTimer) self->joinTimer->cancelTimeout();
             uint8_t bssid[6] = {};
             if (self->joinMailbox.target(bssid) &&
@@ -803,6 +857,29 @@ IOReturn AICAirPortController::completeJoin(
 #else
     (void)client;
     (void)completion;
+    return kIOReturnUnsupported;
+#endif
+}
+
+IOReturn AICAirPortController::requestLeave() {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    return commandGate ? commandGate->runAction(
+        joinGated, reinterpret_cast<void *>(uintptr_t(kAICJoinLeave)))
+        : kIOReturnNotReady;
+#else
+    return kIOReturnUnsupported;
+#endif
+}
+
+IOReturn AICAirPortController::nextLeaveCommand(
+    IOUserClient *client, AICNativeCommand *command) {
+    if (!client || !command) return kIOReturnBadArgument;
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    return commandGate ? commandGate->runAction(
+        joinGated, reinterpret_cast<void *>(uintptr_t(kAICJoinNextLeave)),
+        command, client) : kIOReturnNotReady;
+#else
+    (void)client;
     return kIOReturnUnsupported;
 #endif
 }
@@ -1128,6 +1205,18 @@ extern "C" IOReturn AICNativeCompleteJoin(
     if (!completion) return kIOReturnBadArgument;
     auto *controller = OSDynamicCast(AICAirPortController, service);
     return controller ? controller->completeJoin(client, *completion)
+                      : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeRequestLeave(IOService *service) {
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->requestLeave() : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeNextLeaveCommand(
+    IOService *service, IOUserClient *client, AICNativeCommand *command) {
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->nextLeaveCommand(client, command)
                       : kIOReturnBadArgument;
 }
 
