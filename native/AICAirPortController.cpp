@@ -153,6 +153,7 @@ private:
     bool attachNativeInterface();
     void detachNativeInterface();
     static IOReturn attachNativeGated(OSObject *owner, void *, void *, void *, void *);
+    static IOReturn updateLinkGated(OSObject *owner, void *, void *, void *, void *);
     static IOReturn scanGated(OSObject *owner, void *operation,
                              void *payload, void *, void *);
     static void scanTimerFired(OSObject *owner, IOTimerEventSource *sender);
@@ -301,6 +302,22 @@ IOReturn AICAirPortController::attachNativeGated(
         !controller->queue->inGate()) return kIOReturnNotPermitted;
     return controller->attachNativeInterface() ? kIOReturnSuccess
                                                 : kIOReturnNotReady;
+}
+
+IOReturn AICAirPortController::updateLinkGated(
+    OSObject *owner, void *, void *, void *, void *) {
+    auto *controller = OSDynamicCast(AICAirPortController, owner);
+    if (!controller || !controller->queue || !controller->queue->inGate())
+        return kIOReturnNotPermitted;
+    if (!controller->nativeStarted || !controller->bsdInterface ||
+        !controller->bsdInterface->getIfnet()) return kIOReturnNotReady;
+    IOLockLock(controller->stateLock);
+    const bool connected = controller->stateReady &&
+        controller->radioState.powered && controller->radioState.associated;
+    IOLockUnlock(controller->stateLock);
+    controller->setLinkStatus(kIONetworkLinkValid |
+        (connected ? kIONetworkLinkActive : 0));
+    return kIOReturnSuccess;
 }
 
 bool AICAirPortController::attachNativeInterface() {
@@ -897,6 +914,8 @@ IOReturn AICAirPortController::publishRadioState(
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
     if (commandGate && !nativeInterface)
         return commandGate->runAction(attachNativeGated);
+    if (commandGate && (linkChanged || !state.powered))
+        return commandGate->runAction(updateLinkGated);
 #endif
     return kIOReturnSuccess;
 }

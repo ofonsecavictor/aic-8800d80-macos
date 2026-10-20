@@ -116,3 +116,24 @@ IOReturn AICInfraInterface::setWCL_JOIN_ABORT(void *) {
     return radioProvider ? AICNativeAbortJoin(radioProvider)
                          : kIOReturnNotReady;
 }
+
+IOReturn AICInfraInterface::setWCL_LINK_STATE_UPDATE(
+    apple80211_wcl_update_link_state *request) {
+    if (!request || !radioProvider) return kIOReturnBadArgument;
+    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(request);
+    if (bytes[6]) {
+        AICNativeRadioState state = {};
+        const IOReturn status = AICNativeCopyRadioState(radioProvider, &state);
+        if (status != kIOReturnSuccess) return status;
+        if (!state.associated || bcmp(state.bssid, bytes, 6) != 0)
+            return kIOReturnNotReady;
+        if (bytes[8])
+            setCurrentApAddress(reinterpret_cast<ether_addr *>(request));
+        if (bytes[7])
+            setLinkState(kIO80211NetworkLinkUp, 0, false, 0);
+    } else {
+        setCurrentApAddress(nullptr);
+        setLinkState(kIO80211NetworkLinkDown, 0, false, 0);
+    }
+    return kIOReturnSuccess;
+}

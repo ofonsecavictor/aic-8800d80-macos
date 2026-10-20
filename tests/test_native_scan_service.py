@@ -2,6 +2,7 @@ import threading
 import unittest
 
 from native_radio_control import NativeScanNotReady
+from native_radio_control import ETHERNET_FRAME, frame_for_service_rx
 from native_scan_service import NativeScanSession, SCAN_FAILED
 
 
@@ -63,6 +64,59 @@ class FakeBridge:
         self.calls.append(('close',))
 
 
+class FakeJoinWifi(FakeWifi):
+    radio_observer = None
+    kernel_session = None
+    target_bssid = None
+    target_band = None
+    active_vif = None
+
+    def scan(self, ssid, key, *, scan_frequencies, publish_results):
+        self.calls.append(('join_scan', ssid, len(key), scan_frequencies,
+                           publish_results))
+        target = {'ssid': ssid, 'bssid': '02:11:22:33:44:55',
+                  'frequency': 5220, 'rssi': -52}
+        self.radio_observer(True, target, self.mac)
+        self.kernel_session(0, 1, target, lambda frame: self.calls.append(
+            ('eapol', len(frame))))
+        self.radio_observer(False, None, self.mac)
+
+    def receive_native(self):
+        self.native_stop.set()
+        return [bytes.fromhex('0211223344550211223344550800') + b'payload']
+
+    def data_write(self, frame, vif, station, label, *, quiet,
+                   require_confirmation):
+        self.calls.append(('tx', frame, vif, station, quiet,
+                           require_confirmation))
+
+
+class FakeJoinBridge(FakeBridge):
+    def __init__(self):
+        super().__init__()
+        self.outgoing = frame_for_service_rx(
+            ETHERNET_FRAME, bytes.fromhex('0211223344550211223344550800') +
+            b'outbound', 1, 0)
+        self.join = None
+
+    def next_scan_request(self):
+        return None
+
+    def next_join_request(self):
+        join, self.join = self.join, None
+        return join
+
+    def complete_join(self, sequence, status_code=0):
+        self.calls.append(('join_complete', sequence, status_code))
+
+    def submit_received_frame(self, frame):
+        self.calls.append(('rx', bytes(frame.data[:frame.length])))
+
+    def next_transmit_frame(self):
+        frame, self.outgoing = self.outgoing, None
+        return frame
+
+
 class NativeScanServiceTests(unittest.TestCase):
     def setUp(self):
         self.wifi = FakeWifi()
@@ -100,6 +154,47 @@ class NativeScanServiceTests(unittest.TestCase):
         self.assertEqual(self.bridge.calls[-2][0:2], ('publish', False))
         self.assertEqual(self.bridge.calls[-1], ('close',))
         self.assertTrue(self.wifi.closed)
+
+    def test_join_uses_saved_pmk_once_and_pumps_native_ethernet(self):
+        wifi = FakeJoinWifi()
+        bridge = FakeJoinBridge()
+        session = NativeScanSession(wifi, bridge, threading.Event())
+        request = {'sequence': 8, 'ssid': 'test',
+                   'bssid': '02:11:22:33:44:55', 'frequency': 5220,
+                   'key': b'k' * 32, 'rsn': b''}
+        session.execute_join(request)
+        self.assertEqual(wifi.calls[0], ('join_scan', 'test', 32, (5220,), False))
+        self.assertIn(('join_complete', 8, 0), bridge.calls)
+        self.assertTrue(any(call[0] == 'rx' for call in bridge.calls))
+        self.assertTrue(any(call[0] == 'tx' for call in wifi.calls))
+        self.assertNotIn('key', request)
+        self.assertIsNone(wifi.radio_observer)
+        self.assertIsNone(wifi.kernel_session)
+
+    def test_join_failure_completes_error_and_clears_key(self):
+        wifi = FakeJoinWifi()
+        bridge = FakeJoinBridge()
+        session = NativeScanSession(wifi, bridge, threading.Event())
+        wifi.scan = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError('firmware rejected association'))
+        request = {'sequence': 9, 'ssid': 'test',
+                   'bssid': '02:11:22:33:44:55', 'frequency': 5220,
+                   'key': b'k' * 32, 'rsn': b''}
+        with self.assertRaises(RuntimeError):
+            session.execute_join(request)
+        self.assertEqual(bridge.calls, [('join_complete', 9, SCAN_FAILED)])
+        self.assertNotIn('key', request)
+
+    def test_research_loop_dispatches_join_and_releases_usb(self):
+        wifi = FakeJoinWifi()
+        bridge = FakeJoinBridge()
+        bridge.join = {'sequence': 10, 'ssid': 'test',
+                       'bssid': '02:11:22:33:44:55', 'frequency': 5220,
+                       'key': b'k' * 32, 'rsn': b''}
+        NativeScanSession(wifi, bridge, threading.Event()).run()
+        self.assertIn(('join_complete', 10, 0), bridge.calls)
+        self.assertEqual(bridge.calls[-1], ('close',))
+        self.assertTrue(wifi.closed)
 
 
 if __name__ == '__main__':

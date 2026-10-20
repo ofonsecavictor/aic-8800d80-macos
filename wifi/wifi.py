@@ -57,6 +57,7 @@ class Wifi:
         self.native_connect=False;self.native_stop=threading.Event()
         self.kernel_session=None;self.kernel_poll=None;self.scan_observer=None;self.control_observer=None
         self.radio_observer=None;self.association_observer=None;self.lease_observer=None
+        self.write_auth_report=True
         self.scan_requested=threading.Event();self.active_vif=None
         self.connected_scan=False;self.connected_scan_deadline=0;self.connected_results={}
         self.rx_diagnostics={'records':0,'malformed':0,'ethernet_frames':0,'hardware':{},'ether_types':{}}
@@ -225,7 +226,7 @@ class Wifi:
     def scan(self,probe_ssid=None,auth_key=None,*,scan_frequencies=None,publish_results=True):
         if self.info['lmac_version']!='06090101':raise RuntimeError('Untested firmware revision')
         if scan_frequencies is not None:
-            if probe_ssid is not None or not scan_frequencies or len(scan_frequencies)>42 or any(
+            if not scan_frequencies or len(scan_frequencies)>42 or any(
                     frequency_to_channel(value) is None for value in scan_frequencies):
                 raise ValueError('Invalid native scan frequency plan')
             scan_frequencies=tuple(dict.fromkeys(scan_frequencies))
@@ -478,7 +479,8 @@ class Wifi:
                         print('EAPOL M1 recebido do roteador.',flush=True)
                         if auth_key is not None:
                             result=self.authenticate(vif,station,target,auth_key,data)
-                            write_report(HERE/('resultado-ip.json' if self.test_ip else 'resultado-autenticacao.json'),result)
+                            if self.write_auth_report:
+                                write_report(HERE/('resultado-ip.json' if self.test_ip else 'resultado-autenticacao.json'),result)
                             print(json.dumps(result,indent=2,ensure_ascii=False),flush=True)
                         else:
                             # Exercise data OUT with a normal EAPOL-Start, no credentials.

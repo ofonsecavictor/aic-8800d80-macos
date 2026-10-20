@@ -125,7 +125,6 @@
     IOReturn setWCL_LINK_UP_DONE(void*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_SET_SCAN_HOME_AWAY_TIME(scanHomeAndAwayTime*) override { return kIOReturnUnsupported; }
     IOReturn setVOICE_IND_STATE(apple80211_voice_ind_state*) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_LINK_STATE_UPDATE(apple80211_wcl_update_link_state*) override { return kIOReturnUnsupported; }
     IOReturn setRSN_XE(apple80211_rsn_xe_data*) override { return kIOReturnUnsupported; }
     IOReturn setWIFI_BT_5G_POLICY(apple80211_wifi_bt_5g_policy_t*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ULOFDMA_STATE(apple80211_wcl_ulofdma_state*) override { return kIOReturnUnsupported; }
