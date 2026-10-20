@@ -71,6 +71,30 @@ int main() {
     command.operation = 2;
     assert(!AICNativeCommandValid(command));
 
+    AICNativeScanRequest scan = {};
+    scan.version = kAICNativeBridgeVersion;
+    scan.sequence = 7;
+    scan.type = 1;
+    scan.channelCount = 1;
+    scan.selectedChannels[44 / 8] = uint8_t(1u << (44 % 8));
+    assert(AICNativeScanRequestValid(scan));
+    scan.ssidLength = 1;
+    scan.ssid[1] = 'X';
+    assert(!AICNativeScanRequestValid(scan));
+    scan.ssid[1] = 0;
+    scan.reserved[0] = 1;
+    assert(!AICNativeScanRequestValid(scan));
+    scan.reserved[0] = 0;
+    scan.selectedChannels[44 / 8] = 0;
+    assert(!AICNativeScanRequestValid(scan));
+    scan.channelCount = 0;
+    assert(AICNativeScanRequestValid(scan));
+
+    AICNativeScanCompletion completion = {kAICNativeBridgeVersion, 7, 0, 0};
+    assert(AICNativeScanCompletionValid(completion));
+    completion.reserved = 1;
+    assert(!AICNativeScanCompletionValid(completion));
+
     AICNativeFrame frame = {};
     frame.version = kAICNativeBridgeVersion;
     frame.kind = kAICNativeFrameEthernet;

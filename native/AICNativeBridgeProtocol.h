@@ -10,6 +10,9 @@ enum {
     kAICNativeNextCommand = 2,
     kAICNativeNextFrame = 3,
     kAICNativeSubmitFrame = 4,
+    kAICNativeNextScan = 5,
+    kAICNativeSubmitScanResult = 6,
+    kAICNativeCompleteScan = 7,
     kAICNativeSetPower = 1,
     kAICNativeFrameEthernet = 1,
     kAICNativeFrameAction = 2,
@@ -34,6 +37,36 @@ typedef struct AICNativeCommand {
     uint32_t value;
 } AICNativeCommand;
 
+// Private WCL scan handoff. The service receives a bounded request and sends
+// back only validated beacon metadata/IEs for the same sequence. No password
+// or raw management frame is exposed by this contract.
+typedef struct AICNativeScanRequest {
+    uint32_t version;
+    uint32_t sequence;
+    uint32_t identifier;
+    uint32_t type;
+    uint32_t ssidLength;
+    uint32_t channelCount;
+    uint8_t ssid[32];
+    uint8_t bssid[6];
+    uint8_t reserved[2];
+    uint8_t selectedChannels[32];
+} AICNativeScanRequest;
+
+typedef struct AICNativeScanResult {
+    uint32_t version;
+    uint32_t sequence;
+    uint32_t length;
+    uint8_t data[1088]; // 64-byte WCL metadata + at most 1024 IE bytes.
+} AICNativeScanResult;
+
+typedef struct AICNativeScanCompletion {
+    uint32_t version;
+    uint32_t sequence;
+    uint32_t status;
+    uint32_t reserved;
+} AICNativeScanCompletion;
+
 // Ephemeral packet transport only. No frame is logged or written to disk.
 // An action frame is a full, unprotected 802.11 management frame, not AWDL
 // payload interpretation. VIF 0xff is allowed only for RX fan-out records.
@@ -51,6 +84,9 @@ typedef struct AICNativeFrame {
 #if defined(__cplusplus)
 static_assert(sizeof(AICNativeRadioState) == 36, "radio state ABI size");
 static_assert(sizeof(AICNativeCommand) == 16, "command ABI size");
+static_assert(sizeof(AICNativeScanRequest) == 96, "scan request ABI size");
+static_assert(sizeof(AICNativeScanResult) == 1100, "scan result ABI size");
+static_assert(sizeof(AICNativeScanCompletion) == 16, "scan completion ABI size");
 static_assert(sizeof(AICNativeFrame) == 1540, "frame ABI size");
 
 inline bool AICNativeFrameValid(const AICNativeFrame &frame, bool fromService) {
@@ -77,6 +113,25 @@ inline bool AICNativeCommandValid(const AICNativeCommand &command) {
     return command.version == kAICNativeBridgeVersion &&
            command.operation == kAICNativeSetPower &&
            command.sequence != 0 && command.value <= 1;
+}
+
+inline bool AICNativeScanRequestValid(const AICNativeScanRequest &request) {
+    if (request.version != kAICNativeBridgeVersion || !request.sequence ||
+        request.type < 1 || request.type > 4 || request.ssidLength > 32 ||
+        request.channelCount > 400 || request.reserved[0] ||
+        request.reserved[1]) return false;
+    for (uint32_t i = request.ssidLength; i < 32; ++i)
+        if (request.ssid[i]) return false;
+    bool hasChannel = false;
+    for (unsigned i = 0; i < 32; ++i)
+        hasChannel |= request.selectedChannels[i] != 0;
+    return request.channelCount == 0 ? !hasChannel : hasChannel;
+}
+
+inline bool AICNativeScanCompletionValid(
+    const AICNativeScanCompletion &completion) {
+    return completion.version == kAICNativeBridgeVersion &&
+           completion.sequence != 0 && completion.reserved == 0;
 }
 
 inline bool AICNativeRadioStateValid(const AICNativeRadioState &state) {
