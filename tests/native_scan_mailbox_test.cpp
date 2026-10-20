@@ -53,10 +53,10 @@ int main() {
 
     assert(mailbox.begin(request, 2000, &ticket));
     const uint32_t secondSequence = ticket.sequence;
-    assert(!mailbox.acceptResult(secondSequence, packet, written, 22000));
-    assert(!mailbox.finish(secondSequence, 22000));
+    assert(!mailbox.acceptResult(secondSequence, packet, written, 37000));
+    assert(!mailbox.finish(secondSequence, 37000));
     uint32_t expired = 0;
-    assert(mailbox.expire(22000, &expired) && expired == secondSequence);
+    assert(mailbox.expire(37000, &expired) && expired == secondSequence);
     assert(!mailbox.read(&read));
 
     assert(mailbox.begin(request, 23000, &ticket));

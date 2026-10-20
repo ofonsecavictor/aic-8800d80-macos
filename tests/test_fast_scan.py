@@ -84,6 +84,15 @@ class FastScanTests(unittest.TestCase):
         self.assertFalse(w.published[0][1]['merge_existing'])
         self.assertEqual(len(w.probed), 1)
 
+    def test_native_scan_uses_requested_channel_without_app_report(self):
+        w = self.make_wifi()
+        w.target_band = None
+        w.scan_observer = lambda item: None
+        with patch.object(wifi, 'network', return_value=TARGET):
+            w.scan(scan_frequencies=(5220,), publish_results=False)
+        self.assertEqual(w.scans, [1])
+        self.assertEqual(w.published, [])
+
     def test_menu_scan_does_not_interrupt_connection(self):
         controller = service.Controller()
         controller.config = lambda: {'enabled': True}

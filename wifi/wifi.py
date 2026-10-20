@@ -222,8 +222,13 @@ class Wifi:
             {'updated_unix':time.time(),'configured_ssid':configured_ssid or '',
              'configured_band':getattr(self,'target_band',None),'networks':public},mode=0o644)
 
-    def scan(self,probe_ssid=None,auth_key=None):
+    def scan(self,probe_ssid=None,auth_key=None,*,scan_frequencies=None,publish_results=True):
         if self.info['lmac_version']!='06090101':raise RuntimeError('Untested firmware revision')
+        if scan_frequencies is not None:
+            if probe_ssid is not None or not scan_frequencies or len(scan_frequencies)>42 or any(
+                    frequency_to_channel(value) is None for value in scan_frequencies):
+                raise ValueError('Invalid native scan frequency plan')
+            scan_frequencies=tuple(dict.fromkeys(scan_frequencies))
         vif=None;scanning=False
         try:
             self.initialize_radio()
@@ -246,7 +251,8 @@ class Wifi:
                         if frequency and connectable_frequency(frequency) and frequency not in cached:
                             cached.append(frequency)
                 except (OSError,ValueError,TypeError):pass
-            plans=[cached[:3],None] if cached else [None]
+            plans=[scan_frequencies] if scan_frequencies is not None else (
+                [cached[:3],None] if cached else [None])
             results={};target=None;fast=False
             for frequencies in plans:
                 if self.native_stop.is_set():raise KeyboardInterrupt
@@ -255,7 +261,9 @@ class Wifi:
                 ack=self.request(0x1000,passive_scan(vif,band,frequencies),confirmation=0x1009)
                 if ack[:1]!=b'\x00':raise RuntimeError('Scan refused: '+ack.hex())
                 scanning=True
-                current={};done=False;deadline=time.monotonic()+(8 if frequencies else 30)
+                current={};done=False;scan_status=None
+                deadline=time.monotonic()+(max(8,min(30,2+len(frequencies)*.7))
+                                           if frequencies else 30)
                 while not done and time.monotonic()<deadline:
                     if self.native_stop.is_set():raise KeyboardInterrupt
                     if self.kernel_poll:self.kernel_poll()
@@ -268,8 +276,11 @@ class Wifi:
                                 if self.scan_observer:self.scan_observer(item)
                                 current[item['bssid']]=item
                         elif msg==0x1001:
-                            print('Scan completion: '+body.hex(),flush=True);done=True
+                            print('Scan completion: '+body.hex(),flush=True)
+                            scan_status=body;done=True
                 if not done:raise RuntimeError('Scan completion timed out')
+                if not scan_status or scan_status[0]!=0:
+                    raise RuntimeError('Scan completion failed: '+(scan_status or b'').hex())
                 scanning=False
                 results=current
                 if probe_ssid is None:break
@@ -280,8 +291,9 @@ class Wifi:
                 if target is not None:
                     fast=frequencies is not None
                     break
-            if self.control_observer:self.control_observer(0x1001,b'\x00')
-            self.publish_networks(results,probe_ssid,merge_existing=fast)
+            if self.control_observer:self.control_observer(0x1001,scan_status)
+            if publish_results:
+                self.publish_networks(results,probe_ssid,merge_existing=fast)
             if probe_ssid is not None:
                 if target is None:raise RuntimeError('Selected network not found')
                 self.probe(vif,target,auth_key)

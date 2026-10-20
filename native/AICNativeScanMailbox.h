@@ -15,7 +15,7 @@ struct AICNativeScanTicket {
 
 class AICNativeScanMailbox {
 public:
-    static constexpr uint64_t kTimeoutMillis = 20000;
+    static constexpr uint64_t kTimeoutMillis = 35000;
 
     bool begin(const AICWCLScanRequest &request, uint64_t nowMillis,
                AICNativeScanTicket *ticket) {

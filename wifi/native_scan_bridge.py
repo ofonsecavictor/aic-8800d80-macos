@@ -82,6 +82,27 @@ def _ssid_from_ies(ies):
     return ssid
 
 
+def matches_request(request, item):
+    """Apply the same selection before crossing the kernel scan mailbox."""
+    beacon = item.get('_beacon')
+    if not isinstance(beacon, dict) or not isinstance(beacon.get('ies'), bytes):
+        return False
+    if item.get('frequency') not in request['frequencies']:
+        return False
+    if request['bssid'] is not None:
+        try:
+            bssid = bytes.fromhex(item['bssid'].replace(':', ''))
+        except (KeyError, AttributeError, ValueError):
+            return False
+        if bssid != request['bssid']:
+            return False
+    try:
+        ssid = _ssid_from_ies(beacon['ies'])
+    except ValueError:
+        return False
+    return request['type'] == 2 or not request['ssid'] or ssid == request['ssid']
+
+
 def encode_result(sequence, item):
     if not isinstance(sequence, int) or not 1 <= sequence <= 0xffffffff:
         raise ValueError('Invalid scan sequence')

@@ -1,7 +1,8 @@
 import struct
 import unittest
 
-from native_scan_bridge import ScanRequest, completion, decode_request, encode_result
+from native_scan_bridge import (ScanRequest, completion, decode_request,
+                                encode_result, matches_request)
 
 
 class NativeScanBridgeTests(unittest.TestCase):
@@ -19,6 +20,17 @@ class NativeScanBridgeTests(unittest.TestCase):
         self.assertEqual(decoded['ssid'], b'A\xffC')
         self.assertEqual(decoded['frequencies'], (5220,))
         self.assertEqual(decoded['sequence'], 9)
+
+    def test_filters_beacons_before_kernel_submission(self):
+        request = {'type': 1, 'ssid': b'AIC', 'bssid': None,
+                   'frequencies': (5220,)}
+        item = {'frequency': 5220, 'bssid': '02:11:22:33:44:55',
+                '_beacon': {'ies': b'\x00\x03AIC'}}
+        self.assertTrue(matches_request(request, item))
+        self.assertFalse(matches_request({**request, 'ssid': b'Other'}, item))
+        self.assertFalse(matches_request({**request, 'frequencies': (5180,)}, item))
+        self.assertFalse(matches_request({**request, 'bssid': b'\x02\0\0\0\0\0'}, item))
+        self.assertTrue(matches_request({**request, 'type': 2, 'ssid': b'Other'}, item))
 
     def test_invalid_channel_request_rejected(self):
         request = ScanRequest()

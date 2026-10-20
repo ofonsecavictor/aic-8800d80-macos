@@ -14,6 +14,10 @@ ETHERNET_FRAME = 1
 ACTION_FRAME = 2
 
 
+class NativeScanNotReady(RuntimeError):
+    pass
+
+
 class RadioState(c.Structure):
     _fields_ = [('version', c.c_uint32), ('powered', c.c_uint32),
                 ('associated', c.c_uint32), ('channel', c.c_uint32),
@@ -215,6 +219,8 @@ class NativeRadioPublisher:
             raise RuntimeError('AIC native control is closed')
         status = self.library.IOConnectCallStructMethod(
             self.connect, 8, None, 0, None, None)
+        if status == NOT_READY:
+            raise NativeScanNotReady('AIC native scan interface not ready')
         if status:
             raise RuntimeError('AIC native scan enable: %08x' % status)
 
