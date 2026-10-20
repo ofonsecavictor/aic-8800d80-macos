@@ -81,6 +81,9 @@ int main() {
     assert(AICNativeFrameValid(frame, false));
     frame.vif = 0xff;
     assert(!AICNativeFrameValid(frame, true));
+    frame.vif = 1;
+    assert(!AICNativeFrameValid(frame, true));
+    frame.vif = 0xff;
     frame.kind = kAICNativeFrameAction;
     frame.length = 40;
     frame.channel = 44;
@@ -113,6 +116,9 @@ int main() {
     }
     assert(frames.size() == 0);
     assert(!frames.pop(&output));
+    assert(frames.push(frame, true));
+    frames.clear();
+    assert(frames.size() == 0 && !frames.pop(&output));
     frame.data[40] = 1;
     assert(!AICNativeFrameValid(frame, true));
 

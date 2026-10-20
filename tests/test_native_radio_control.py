@@ -113,6 +113,8 @@ class NativeRadioControlTests(unittest.TestCase):
             frame_for_service_rx(ETHERNET_FRAME, bytes(13), 1, 0)
         with self.assertRaises(ValueError):
             frame_for_service_rx(ACTION_FRAME, bytes(40), 1, 1, 44)
+        with self.assertRaises(ValueError):
+            frame_for_service_rx(ETHERNET_FRAME, bytes(14), 1, 1)
         frame = frame_for_service_rx(ETHERNET_FRAME, bytes(14), 1, 0)
         frame.data[14] = 1
         with self.assertRaises(ValueError):

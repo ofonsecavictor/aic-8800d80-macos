@@ -5,12 +5,78 @@
 
 #include <IO80211ControllerV2.h>
 #include <IOKit/IOLocks.h>
+#include <IOKit/network/IOOutputQueue.h>
+#include <IOKit/network/IOEthernetInterface.h>
+#include <libkern/version.h>
+#include <libkern/c++/OSNumber.h>
+#include <libkern/c++/OSString.h>
 #include <mach/kmod.h>
+#include <sys/kpi_mbuf.h>
 #include "AICNativeBridgeProtocol.h"
 #include "AICNativePowerMailbox.h"
 #include "AICNativeFrameMailbox.h"
 #include "AICNativeCapabilityBits.h"
+#include "AICNativeStartupPolicy.h"
 #include "AICNativeBridgeUserClient.h"
+
+class AICNativeUSBProvider final : public IOService {
+    OSDeclareDefaultStructors(AICNativeUSBProvider)
+
+public:
+    bool start(IOService *provider) override;
+    void free() override;
+    IOWorkLoop *getWorkLoop() const override { return queue; }
+    IO80211WorkQueue *nativeQueue() const { return queue; }
+
+private:
+    IO80211WorkQueue *queue = nullptr;
+};
+
+OSDefineMetaClassAndStructors(AICNativeUSBProvider, IOService)
+
+static bool AICVerifiedUSBInterface(IOService *provider) {
+    if (!provider) return false;
+    OSNumber *vendor = OSDynamicCast(OSNumber, provider->getProperty("idVendor"));
+    OSNumber *product = OSDynamicCast(OSNumber, provider->getProperty("idProduct"));
+    OSNumber *index = OSDynamicCast(OSNumber, provider->getProperty("bInterfaceNumber"));
+    OSNumber *interfaceClass = OSDynamicCast(
+        OSNumber, provider->getProperty("bInterfaceClass"));
+    OSNumber *configuration = OSDynamicCast(
+        OSNumber, provider->getProperty("bConfigurationValue"));
+    OSString *serial = OSDynamicCast(
+        OSString, provider->getProperty("USB Serial Number"));
+    return vendor && vendor->unsigned32BitValue() == 0xa69c &&
+           product && product->unsigned32BitValue() == 0x8d81 &&
+           index && index->unsigned32BitValue() == 2 &&
+           interfaceClass && interfaceClass->unsigned32BitValue() == 255 &&
+           configuration && configuration->unsigned32BitValue() == 1 &&
+           serial && serial->isEqualTo("20220103");
+}
+
+bool AICNativeUSBProvider::start(IOService *provider) {
+    if (version_major != 24 || version_minor < 2 ||
+        !AICVerifiedUSBInterface(provider) ||
+        !IOService::start(provider)) return false;
+    queue = IO80211WorkQueue::workQueue();
+    if (!queue) {
+        IOService::stop(provider);
+        return false;
+    }
+    registerService();
+    return true;
+}
+
+extern "C" IO80211WorkQueue *AICDefaultWorkQueue()
+    __asm__("__ZN16IO80211WorkQueue19getDefaultWorkQueueEv");
+extern "C" void AICSetDefaultWorkQueue(IO80211WorkQueue *)
+    __asm__("__ZN16IO80211WorkQueue19setDefaultWorkQueueEPS_");
+
+void AICNativeUSBProvider::free() {
+    if (queue && AICDefaultWorkQueue() == queue)
+        AICSetDefaultWorkQueue(nullptr);
+    OSSafeReleaseNULL(queue);
+    IOService::free();
+}
 
 class AICAirPortController final : public IO80211Controller {
     OSDeclareDefaultStructors(AICAirPortController)
@@ -18,6 +84,10 @@ class AICAirPortController final : public IO80211Controller {
 public:
     bool init(OSDictionary *dictionary = nullptr) override;
     void free() override;
+    IOWorkLoop *getWorkLoop() const override { return queue; }
+    IO80211WorkQueue *getWorkQueue() const override { return queue; }
+    bool createWorkLoop() override { return queue != nullptr; }
+    bool createWorkQueue() override { return queue != nullptr; }
     bool start(IOService *provider) override;
     void stop(IOService *provider) override;
     bool isCommandProhibited(int command) override;
@@ -53,14 +123,18 @@ public:
     IOReturn nextReceivedFrame(AICNativeFrame *frame);
     IOReturn queueTransmitFrame(const AICNativeFrame &frame);
     IOReturn nextTransmitFrame(AICNativeFrame *frame);
+    UInt32 outputPacket(mbuf_t packet, void *parameter) override;
 
 private:
+    IO80211WorkQueue *queue = nullptr;
+    IOEthernetInterface *bsdInterface = nullptr; // Set only after native registration.
     IOLock *stateLock = nullptr;
     AICNativeRadioState radioState = {};
     bool stateReady = false;
     AICNativePowerMailbox powerMailbox;
     AICNativeFrameMailbox receivedFrames;
     AICNativeFrameMailbox transmitFrames;
+    uint32_t transmitSequence = 0;
 };
 
 OSDefineMetaClassAndStructors(AICAirPortController, IO80211Controller)
@@ -73,9 +147,15 @@ bool AICAirPortController::init(OSDictionary *dictionary) {
 
 void AICAirPortController::free() {
     if (stateLock) {
+        IOLockLock(stateLock);
+        receivedFrames.clear();
+        transmitFrames.clear();
+        bzero(&radioState, sizeof(radioState));
+        IOLockUnlock(stateLock);
         IOLockFree(stateLock);
         stateLock = nullptr;
     }
+    OSSafeReleaseNULL(queue);
     IO80211Controller::free();
 }
 
@@ -84,7 +164,18 @@ bool AICAirPortController::start(IOService *provider) {
     // may start the controller headlessly to validate the user-client ABI.
     // No IO80211 interface, network route, or USB claim is created here.
 #if defined(AIC_HEADLESS_BRIDGE_PROBE) && AIC_HEADLESS_BRIDGE_PROBE
-    if (!provider || !IO80211Controller::start(provider)) return false;
+    AICNativeUSBProvider *wrapper = OSDynamicCast(AICNativeUSBProvider, provider);
+    if (version_major != 24 || version_minor < 2 || !wrapper ||
+        !AICVerifiedUSBInterface(wrapper->getProvider()))
+        return false;
+    queue = wrapper->nativeQueue();
+    if (!AICNativeSharedWorkLoop(static_cast<IOWorkLoop *>(queue),
+                                 wrapper->getWorkLoop())) {
+        queue = nullptr;
+        return false;
+    }
+    queue->retain();
+    if (!IO80211Controller::start(provider)) return false;
     registerService();
     return true;
 #else
@@ -95,6 +186,14 @@ bool AICAirPortController::start(IOService *provider) {
 }
 
 void AICAirPortController::stop(IOService *provider) {
+    if (stateLock) {
+        IOLockLock(stateLock);
+        receivedFrames.clear();
+        transmitFrames.clear();
+        stateReady = false;
+        bzero(&radioState, sizeof(radioState));
+        IOLockUnlock(stateLock);
+    }
     IO80211Controller::stop(provider);
 }
 
@@ -186,6 +285,14 @@ IOReturn AICAirPortController::publishRadioState(
     const AICNativeRadioState &state) {
     if (!stateLock || !AICNativeRadioStateValid(state)) return kIOReturnBadArgument;
     IOLockLock(stateLock);
+    const bool linkChanged = stateReady &&
+        (radioState.associated != state.associated ||
+         bcmp(radioState.bssid, state.bssid, 6) != 0 ||
+         bcmp(radioState.mac, state.mac, 6) != 0);
+    if (linkChanged || !state.powered) {
+        receivedFrames.clear();
+        transmitFrames.clear();
+    }
     radioState = state;
     stateReady = true;
     powerMailbox.observe(state.powered != 0);
@@ -220,6 +327,39 @@ IOReturn AICAirPortController::submitReceivedFrame(
     const AICNativeFrame &frame) {
     if (!stateLock || !AICNativeFrameValid(frame, true))
         return kIOReturnBadArgument;
+    if (frame.kind == kAICNativeFrameEthernet) {
+        // This stays unavailable until a future registration path binds a BSD
+        // interface. Never acknowledge RX data into a ghost network service.
+        IOLockLock(stateLock);
+        const bool associated = stateReady && radioState.associated;
+        const bool addressed = (frame.data[0] & 1) ||
+            bcmp(frame.data, radioState.mac, 6) == 0;
+        IOEthernetInterface *target = bsdInterface;
+        if (target) target->retain();
+        IOLockUnlock(stateLock);
+        if (!associated || !target || !target->getIfnet()) {
+            if (target) target->release();
+            return kIOReturnNotReady;
+        }
+        if (!addressed) {
+            target->release();
+            return kIOReturnBadArgument;
+        }
+        mbuf_t packet = allocatePacket(frame.length);
+        if (!packet) {
+            target->release();
+            return kIOReturnNoMemory;
+        }
+        if (mbuf_copyback(packet, 0, frame.length, frame.data,
+                          MBUF_DONTWAIT) != 0) {
+            freePacket(packet);
+            target->release();
+            return kIOReturnNoMemory;
+        }
+        target->inputPacket(packet, frame.length);
+        target->release();
+        return kIOReturnSuccess;
+    }
     IOLockLock(stateLock);
     const bool queued = receivedFrames.push(frame, true);
     IOLockUnlock(stateLock);
@@ -239,9 +379,35 @@ IOReturn AICAirPortController::queueTransmitFrame(
     if (!stateLock || !AICNativeFrameValid(frame, false))
         return kIOReturnBadArgument;
     IOLockLock(stateLock);
-    const bool queued = transmitFrames.push(frame, false);
+    const bool ready = stateReady && radioState.powered &&
+        (frame.kind != kAICNativeFrameEthernet || radioState.associated);
+    const bool queued = ready && transmitFrames.push(frame, false);
     IOLockUnlock(stateLock);
-    return queued ? kIOReturnSuccess : kIOReturnNoSpace;
+    return queued ? kIOReturnSuccess :
+        (ready ? kIOReturnNoSpace : kIOReturnNotReady);
+}
+
+UInt32 AICAirPortController::outputPacket(mbuf_t packet, void *) {
+    if (!packet) return kIOReturnOutputDropped;
+    const bool hasHeader = (mbuf_flags(packet) & MBUF_PKTHDR) != 0;
+    const size_t length = hasHeader ? mbuf_pkthdr_len(packet) : 0;
+    AICNativeFrame frame = {};
+    bool valid = stateLock && hasHeader &&
+                 length >= 14 && length <= kAICNativeFrameMaxBytes;
+    if (valid) {
+        frame.version = kAICNativeBridgeVersion;
+        frame.kind = kAICNativeFrameEthernet;
+        frame.vif = 0;
+        frame.length = static_cast<uint32_t>(length);
+        IOLockLock(stateLock);
+        if (++transmitSequence == 0) ++transmitSequence;
+        frame.sequence = transmitSequence;
+        IOLockUnlock(stateLock);
+        valid = mbuf_copydata(packet, 0, length, frame.data) == 0 &&
+                queueTransmitFrame(frame) == kIOReturnSuccess;
+    }
+    freePacket(packet);
+    return valid ? kIOReturnOutputSuccess : kIOReturnOutputDropped;
 }
 
 IOReturn AICAirPortController::nextTransmitFrame(AICNativeFrame *frame) {

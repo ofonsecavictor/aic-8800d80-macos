@@ -29,6 +29,11 @@ public:
 
     unsigned size() const { return count; }
 
+    void clear() {
+        for (unsigned i = 0; i < kCapacity; ++i) frames[i] = {};
+        head = tail = count = 0;
+    }
+
 private:
     AICNativeFrame frames[kCapacity] = {};
     unsigned head = 0;

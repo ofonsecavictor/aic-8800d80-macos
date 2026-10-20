@@ -61,7 +61,7 @@ inline bool AICNativeFrameValid(const AICNativeFrame &frame, bool fromService) {
     for (uint32_t i = frame.length; i < kAICNativeFrameMaxBytes; ++i)
         if (frame.data[i]) return false;
     if (frame.kind == kAICNativeFrameEthernet)
-        return frame.vif != 0xff && frame.channel == 0 && frame.length >= 14 &&
+        return frame.vif == 0 && frame.channel == 0 && frame.length >= 14 &&
                frame.length <= kAICNativeFrameMaxBytes;
     if (frame.kind != kAICNativeFrameAction || frame.channel < 1 ||
         frame.channel > 196 || frame.length < 25 || frame.length > 512)

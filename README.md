@@ -82,6 +82,7 @@ O instalador não altera intencionalmente `Kernel/Patch`, mas não analisa se to
 - Apenas WPA2-PSK/CCMP nesta versão; não há suporte confirmado para rede aberta, WPA3-only ou autenticação corporativa.
 - O projeto implementa um serviço de rede próprio; recursos do ecossistema Apple como AirDrop, Handoff e Continuity **não foram validados** por este projeto.
 - **Wi‑Fi nativo ainda não funciona:** a v1.1.2 conecta pelo serviço AIC e uma interface UTUN, não por uma `IO80211Interface` do macOS. A branch de pesquisa contém um controlador IO80211 experimental que compila, mas não está instalado nem registra a interface. O foco inicial agora é fazer busca, associação e dados funcionarem nessa interface nativa; AirDrop fica para uma etapa posterior.
+- Um protótipo nativo anterior provocou kernel panic na inicialização do controlador por usar uma fila de trabalho incompatível com a do provedor. A pesquisa atual rejeita essa topologia antes da chamada ao controlador-base, mas essa proteção só passou por checagem offline: **não autoriza instalar ou carregar o novo kext**.
 - A pesquisa para usar AirDrop **somente com o AIC** está em [`docs/airdrop-aic-research.md`](docs/airdrop-aic-research.md); a versão 1.1.2 ainda não oferece essa função.
 - Uma busca completa é adiada quando já existe uma conexão ativa para evitar timeout do controle USB observado no dongle.
 - O pacote publicado não tem assinatura Developer ID nem notarização Apple.
@@ -201,6 +202,7 @@ The installer does not intentionally modify `Kernel/Patch`, but it does not chec
 - WPA2-PSK/CCMP only in this version; open networks, WPA3-only networks, and enterprise authentication are not supported.
 - The project uses its own networking service; Apple ecosystem features such as AirDrop, Handoff, and Continuity **have not been validated** by this project.
 - **Native Wi‑Fi does not work yet:** v1.1.2 connects through the AIC service and a UTUN interface, not a macOS `IO80211Interface`. The research branch contains an experimental IO80211 controller that compiles but is neither installed nor registering an interface. The initial focus is native scanning, association, and data; AirDrop is deferred to a later stage.
+- An earlier native prototype caused kernel panics when controller startup used a work queue incompatible with its provider. The current research code rejects that topology before calling the base controller, but this protection has only been checked offline: **it is not authorization to install or load the new kext**.
 - Research toward AirDrop **using only the AIC** is tracked in [`docs/airdrop-aic-research.md`](docs/airdrop-aic-research.md); version 1.1.2 does not provide this feature yet.
 - A full scan is deferred while connected to avoid the USB control timeout observed with this dongle.
 - The published package has no Apple Developer ID signature or Apple notarization.

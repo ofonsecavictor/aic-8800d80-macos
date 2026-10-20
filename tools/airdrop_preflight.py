@@ -59,10 +59,12 @@ def probe(run=command_output, capabilities=None):
         "awdl0_present": awdl,
         "firmware_capabilities": read_capabilities() if capabilities is None else capabilities,
         "airdrop_proven": False,
+        # An IO80211Interface anywhere in the registry is not proof that the
+        # AIC owns it or that scan, association, and packet I/O work.
         "next_gate": (
-            "Test AIC-backed AWDL discovery and bidirectional transfer."
-            if awdl else
-            "Implement and validate an AIC-backed native Wi-Fi/AWDL interface."
+            "Verify AIC ownership and native scan, association, and packet I/O."
+            if io80211 else
+            "Implement and validate an AIC-backed native Wi-Fi interface."
         ),
     }
 

@@ -47,7 +47,7 @@ def validate_frame(frame, from_service):
     if frame.length > 1514 or any(frame.data[frame.length:]):
         raise ValueError('Invalid AIC native frame padding')
     if frame.kind == ETHERNET_FRAME:
-        if frame.vif == 255 or frame.channel != 0 or not 14 <= frame.length <= 1514:
+        if frame.vif != 0 or frame.channel != 0 or not 14 <= frame.length <= 1514:
             raise ValueError('Invalid AIC Ethernet frame')
     elif frame.kind == ACTION_FRAME:
         if not 1 <= frame.channel <= 196 or not 25 <= frame.length <= 512:

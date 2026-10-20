@@ -24,6 +24,8 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(result["aic_usb_stage"], "ready")
         self.assertFalse(result["awdl0_present"])
         self.assertFalse(result["airdrop_proven"])
+        self.assertEqual(result["next_gate"],
+                         "Implement and validate an AIC-backed native Wi-Fi interface.")
 
     def test_awdl_interface_does_not_prove_transfer(self):
         def run(*args):
@@ -37,6 +39,8 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(result["awdl0_present"])
         self.assertTrue(result["io80211_interface_present"])
         self.assertFalse(result["airdrop_proven"])
+        self.assertEqual(result["next_gate"],
+                         "Verify AIC ownership and native scan, association, and packet I/O.")
 
     def test_other_usb_device_does_not_count_as_aic(self):
         def run(*args):
