@@ -1,7 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 
-#include "../native/AICNativeScanMailbox.h"
+#include "../native/AICNativeScanWire.h"
 
 int main() {
     AICNativeScanMailbox mailbox;
@@ -19,6 +19,10 @@ int main() {
     assert(!mailbox.begin(request, 1001, &ticket));
     AICNativeScanTicket read = {};
     assert(mailbox.read(&read) && read.sequence == ticket.sequence);
+    AICNativeScanRequest wire = {};
+    assert(AICEncodeNativeScanRequest(read, wire));
+    assert(wire.version == kAICNativeBridgeVersion);
+    assert(wire.sequence == ticket.sequence && wire.ssidLength == 3);
     const uint8_t ssid[] = {'A', 'I', 'C'};
     const uint8_t bssid[] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
     const uint8_t ies[] = {0, 3, 'A', 'I', 'C'};
@@ -33,6 +37,14 @@ int main() {
     assert(!mailbox.acceptResult(ticket.sequence, packet, written, 1002));
     packet[offsetof(AICWCLBeaconMetadata, ssid)] = 'A';
     assert(mailbox.acceptResult(ticket.sequence, packet, written, 1002));
+    AICNativeScanResult result = {};
+    result.version = kAICNativeBridgeVersion;
+    result.sequence = ticket.sequence;
+    result.length = static_cast<uint32_t>(written);
+    memcpy(result.data, packet, written);
+    assert(AICNativeScanResultValid(result));
+    result.data[written] = 1;
+    assert(!AICNativeScanResultValid(result));
     assert(mailbox.resultCount() == 1);
     assert(!mailbox.finish(ticket.sequence + 1, 1003));
     assert(mailbox.finish(ticket.sequence, 1003));

@@ -17,6 +17,7 @@ public:
     IOReturn getRSSI(apple80211_rssi_data *data) override;
     IOReturn getHW_ADDR(apple80211_hw_mac_address *data) override;
     IOReturn setWCL_SCAN_REQ(apple80211ScanRequest *request) override;
+    IOReturn setWCL_SCAN_ABORT(void *request) override;
 
 #include "AICInfraProtocolStubs.inc"
 

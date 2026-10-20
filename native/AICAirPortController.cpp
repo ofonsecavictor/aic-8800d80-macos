@@ -8,9 +8,11 @@
 #include <IO80211ControllerV2.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOCommandGate.h>
+#include <IOKit/IOTimerEventSource.h>
 #include <IOKit/network/IOOutputQueue.h>
 #include <IOKit/network/IOEthernetInterface.h>
 #include <IOKit/network/IONetworkMedium.h>
+#include <kern/clock.h>
 #include <libkern/version.h>
 #include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSString.h>
@@ -23,6 +25,7 @@
 #include "AICNativeStartupPolicy.h"
 #include "AICNativeBridgeUserClient.h"
 #include "AICNativeEthernetInterface.h"
+#include "AICNativeScanWire.h"
 
 class AICNativeUSBProvider final : public IOService {
     OSDeclareDefaultStructors(AICNativeUSBProvider)
@@ -129,6 +132,12 @@ public:
     IOReturn nextReceivedFrame(AICNativeFrame *frame);
     IOReturn queueTransmitFrame(const AICNativeFrame &frame);
     IOReturn nextTransmitFrame(AICNativeFrame *frame);
+    IOReturn beginScan(const AICWCLScanRequest &request);
+    IOReturn abortScan();
+    IOReturn nextScanRequest(AICNativeScanRequest *request);
+    IOReturn submitScanResult(const AICNativeScanResult &result);
+    IOReturn completeScan(const AICNativeScanCompletion &completion);
+    IOReturn setScanBridgeEnabled(IOUserClient *client, bool enabled);
     UInt32 outputPacket(mbuf_t packet, void *parameter) override;
 
 private:
@@ -136,9 +145,13 @@ private:
     bool attachNativeInterface();
     void detachNativeInterface();
     static IOReturn attachNativeGated(OSObject *owner, void *, void *, void *, void *);
+    static IOReturn scanGated(OSObject *owner, void *operation,
+                             void *payload, void *, void *);
+    static void scanTimerFired(OSObject *owner, IOTimerEventSource *sender);
 #endif
     IO80211WorkQueue *queue = nullptr;
     IOCommandGate *commandGate = nullptr;
+    IOTimerEventSource *scanTimer = nullptr;
     AICInfraInterface *nativeInterface = nullptr;
     AICNativeEthernetInterface *bsdInterface = nullptr;
     bool nativeAttached = false;
@@ -150,6 +163,9 @@ private:
     AICNativePowerMailbox powerMailbox;
     AICNativeFrameMailbox receivedFrames;
     AICNativeFrameMailbox transmitFrames;
+    AICNativeScanMailbox scanMailbox;
+    bool scanBridgeEnabled = false;
+    IOUserClient *scanOwner = nullptr; // Cleared by owner close or controller teardown.
     uint32_t transmitSequence = 0;
 };
 
@@ -169,6 +185,12 @@ void AICAirPortController::free() {
         if (queue && commandGate->getWorkLoop())
             queue->removeEventSource(commandGate);
         OSSafeReleaseNULL(commandGate);
+    }
+    if (scanTimer) {
+        scanTimer->cancelTimeout();
+        if (queue && scanTimer->getWorkLoop())
+            queue->removeEventSource(scanTimer);
+        OSSafeReleaseNULL(scanTimer);
     }
     if (stateLock) {
         IOLockLock(stateLock);
@@ -202,6 +224,10 @@ bool AICAirPortController::start(IOService *provider) {
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
     commandGate = IOCommandGate::commandGate(this);
     if (!commandGate || queue->addEventSource(commandGate) != kIOReturnSuccess)
+        return false;
+    scanTimer = IOTimerEventSource::timerEventSource(
+        kIOTimerEventSourceOptionsPriorityWorkLoop, this, scanTimerFired);
+    if (!scanTimer || queue->addEventSource(scanTimer) != kIOReturnSuccess)
         return false;
 #endif
     if (!IO80211Controller::start(provider)) return false;
@@ -341,6 +367,14 @@ bool AICAirPortController::attachNativeInterface() {
 }
 
 void AICAirPortController::detachNativeInterface() {
+    if (scanTimer) scanTimer->cancelTimeout();
+    scanBridgeEnabled = false;
+    scanOwner = nullptr;
+    uint32_t aborted = 0;
+    if (scanMailbox.abort(&aborted) && nativeInterface) {
+        IOReturn status = kIOReturnAborted;
+        postMessage(nativeInterface, 237, &status, sizeof(status), true);
+    }
     if (stateLock) {
         IOLockLock(stateLock);
         AICNativeEthernetInterface *bsd = bsdInterface;
@@ -357,6 +391,212 @@ void AICAirPortController::detachNativeInterface() {
     nativeStarted = controllerAttached = nativeAttached = false;
 }
 #endif
+
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+static uint64_t AICNativeUptimeMillis() {
+    uint64_t uptime = 0;
+    uint64_t nanoseconds = 0;
+    clock_get_uptime(&uptime);
+    absolutetime_to_nanoseconds(uptime, &nanoseconds);
+    return nanoseconds / 1000000;
+}
+
+void AICAirPortController::scanTimerFired(
+    OSObject *owner, IOTimerEventSource *sender) {
+    auto *self = OSDynamicCast(AICAirPortController, owner);
+    if (!self || sender != self->scanTimer) return;
+    uint32_t expired = 0;
+    if (self->scanMailbox.expire(AICNativeUptimeMillis(), &expired)) {
+        if (self->nativeInterface) {
+            IOReturn status = kIOReturnTimeout;
+            self->postMessage(self->nativeInterface, 237, &status,
+                              sizeof(status), true);
+        }
+    } else {
+        AICNativeScanTicket pending = {};
+        if (self->scanMailbox.read(&pending))
+            sender->setTimeoutMS(100);
+    }
+}
+
+enum AICScanOperation {
+    kAICScanBegin = 1,
+    kAICScanAbort = 2,
+    kAICScanNext = 3,
+    kAICScanResult = 4,
+    kAICScanComplete = 5,
+    kAICScanEnable = 6,
+    kAICScanDisable = 7,
+};
+
+IOReturn AICAirPortController::scanGated(
+    OSObject *owner, void *operation, void *payload, void *, void *) {
+    auto *self = OSDynamicCast(AICAirPortController, owner);
+    if (!self || !self->queue || !self->queue->inGate())
+        return kIOReturnNotPermitted;
+    const auto op = static_cast<AICScanOperation>(
+        reinterpret_cast<uintptr_t>(operation));
+    const uint64_t now = AICNativeUptimeMillis();
+    uint32_t expired = 0;
+    if (self->scanMailbox.expire(now, &expired) && self->nativeInterface) {
+        if (self->scanTimer) self->scanTimer->cancelTimeout();
+        IOReturn status = kIOReturnTimeout;
+        self->postMessage(self->nativeInterface, 237, &status,
+                          sizeof(status), true);
+    }
+    if (op == kAICScanDisable || op == kAICScanAbort) {
+        if (op == kAICScanDisable) {
+            if (payload != self->scanOwner) return kIOReturnSuccess;
+            self->scanBridgeEnabled = false;
+            self->scanOwner = nullptr;
+        }
+        if (self->scanTimer) self->scanTimer->cancelTimeout();
+        uint32_t aborted = 0;
+        if (self->scanMailbox.abort(&aborted) && self->nativeInterface) {
+            IOReturn status = kIOReturnAborted;
+            self->postMessage(self->nativeInterface, 237, &status,
+                              sizeof(status), true);
+        }
+        return kIOReturnSuccess;
+    }
+    if (!self->nativeStarted || !self->nativeInterface ||
+        !self->bsdInterface || !self->bsdInterface->getIfnet())
+        return kIOReturnNotReady;
+    if (op == kAICScanEnable) {
+        if (!payload || (self->scanOwner && self->scanOwner != payload))
+            return kIOReturnBusy;
+        IOLockLock(self->stateLock);
+        const bool powered = self->stateReady && self->radioState.powered;
+        IOLockUnlock(self->stateLock);
+        if (!powered) return kIOReturnNotReady;
+        self->scanBridgeEnabled = true;
+        self->scanOwner = static_cast<IOUserClient *>(payload);
+        return kIOReturnSuccess;
+    }
+    if (!self->scanBridgeEnabled) return kIOReturnNotReady;
+    if (op == kAICScanBegin) {
+        if (!payload) return kIOReturnBadArgument;
+        IOLockLock(self->stateLock);
+        const bool powered = self->stateReady && self->radioState.powered;
+        IOLockUnlock(self->stateLock);
+        if (!powered) return kIOReturnNotReady;
+        AICNativeScanTicket ticket = {};
+        if (!self->scanMailbox.begin(
+                *static_cast<const AICWCLScanRequest *>(payload), now,
+                &ticket)) return kIOReturnBusy;
+        if (!self->scanTimer || self->scanTimer->setTimeoutMS(
+                AICNativeScanMailbox::kTimeoutMillis) != kIOReturnSuccess) {
+            self->scanMailbox.abort(nullptr);
+            return kIOReturnNotReady;
+        }
+        return kIOReturnSuccess;
+    }
+    if (op == kAICScanNext) {
+        if (!payload) return kIOReturnBadArgument;
+        AICNativeScanTicket ticket = {};
+        if (!self->scanMailbox.read(&ticket)) return kIOReturnNotReady;
+        return AICEncodeNativeScanRequest(
+            ticket, *static_cast<AICNativeScanRequest *>(payload))
+            ? kIOReturnSuccess : kIOReturnError;
+    }
+    if (op == kAICScanResult) {
+        if (!payload) return kIOReturnBadArgument;
+        const auto &result = *static_cast<const AICNativeScanResult *>(payload);
+        if (!AICNativeScanResultValid(result)) return kIOReturnBadArgument;
+        if (!self->scanMailbox.acceptResult(result.sequence, result.data,
+                                            result.length, now))
+            return kIOReturnBadArgument;
+        return self->postMessage(self->nativeInterface, 201,
+                                 const_cast<uint8_t *>(result.data),
+                                 result.length, true);
+    }
+    if (op == kAICScanComplete) {
+        if (!payload) return kIOReturnBadArgument;
+        const auto &completion =
+            *static_cast<const AICNativeScanCompletion *>(payload);
+        if (!AICNativeScanCompletionValid(completion))
+            return kIOReturnBadArgument;
+        if (!self->scanMailbox.finish(completion.sequence, now))
+            return kIOReturnBadArgument;
+        if (self->scanTimer) self->scanTimer->cancelTimeout();
+        IOReturn status = static_cast<IOReturn>(completion.status);
+        return self->postMessage(self->nativeInterface, 237, &status,
+                                 sizeof(status), true);
+    }
+    return kIOReturnUnsupported;
+}
+#endif
+
+IOReturn AICAirPortController::beginScan(const AICWCLScanRequest &request) {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    return commandGate ? commandGate->runAction(
+        scanGated, reinterpret_cast<void *>(uintptr_t(kAICScanBegin)),
+        const_cast<AICWCLScanRequest *>(&request)) : kIOReturnNotReady;
+#else
+    (void)request;
+    return kIOReturnUnsupported;
+#endif
+}
+
+IOReturn AICAirPortController::abortScan() {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    return commandGate ? commandGate->runAction(
+        scanGated, reinterpret_cast<void *>(uintptr_t(kAICScanAbort)))
+        : kIOReturnNotReady;
+#else
+    return kIOReturnUnsupported;
+#endif
+}
+
+IOReturn AICAirPortController::nextScanRequest(AICNativeScanRequest *request) {
+    if (!request) return kIOReturnBadArgument;
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    return commandGate ? commandGate->runAction(
+        scanGated, reinterpret_cast<void *>(uintptr_t(kAICScanNext)), request)
+        : kIOReturnNotReady;
+#else
+    return kIOReturnUnsupported;
+#endif
+}
+
+IOReturn AICAirPortController::submitScanResult(
+    const AICNativeScanResult &result) {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    return commandGate ? commandGate->runAction(
+        scanGated, reinterpret_cast<void *>(uintptr_t(kAICScanResult)),
+        const_cast<AICNativeScanResult *>(&result)) : kIOReturnNotReady;
+#else
+    (void)result;
+    return kIOReturnUnsupported;
+#endif
+}
+
+IOReturn AICAirPortController::completeScan(
+    const AICNativeScanCompletion &completion) {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    return commandGate ? commandGate->runAction(
+        scanGated, reinterpret_cast<void *>(uintptr_t(kAICScanComplete)),
+        const_cast<AICNativeScanCompletion *>(&completion)) : kIOReturnNotReady;
+#else
+    (void)completion;
+    return kIOReturnUnsupported;
+#endif
+}
+
+IOReturn AICAirPortController::setScanBridgeEnabled(
+    IOUserClient *client, bool enabled) {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    if (!client) return kIOReturnBadArgument;
+    return commandGate ? commandGate->runAction(
+        scanGated, reinterpret_cast<void *>(uintptr_t(
+            enabled ? kAICScanEnable : kAICScanDisable)), client)
+        : kIOReturnNotReady;
+#else
+    (void)client;
+    (void)enabled;
+    return kIOReturnUnsupported;
+#endif
+}
 
 bool AICAirPortController::isCommandProhibited(int) {
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
@@ -609,6 +849,47 @@ extern "C" IOReturn AICNativeNextCommand(
     AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
     if (!controller) return kIOReturnBadArgument;
     return controller->nextCommand(command);
+}
+
+extern "C" IOReturn AICNativeBeginScan(
+    IOService *service, const AICWCLScanRequest *request) {
+    if (!service || !request) return kIOReturnBadArgument;
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->beginScan(*request) : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeAbortScan(IOService *service) {
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->abortScan() : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeNextScanRequest(
+    IOService *service, AICNativeScanRequest *request) {
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->nextScanRequest(request) : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeSubmitScanResult(
+    IOService *service, const AICNativeScanResult *result) {
+    if (!result) return kIOReturnBadArgument;
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->submitScanResult(*result)
+                      : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeCompleteScan(
+    IOService *service, const AICNativeScanCompletion *completion) {
+    if (!completion) return kIOReturnBadArgument;
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->completeScan(*completion)
+                      : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeSetScanBridgeEnabled(
+    IOService *service, IOUserClient *client, bool enabled) {
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->setScanBridgeEnabled(client, enabled)
+                      : kIOReturnBadArgument;
 }
 
 extern "C" IOReturn AICNativeSubmitReceivedFrame(

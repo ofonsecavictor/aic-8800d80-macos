@@ -2,6 +2,9 @@
 import ctypes as c
 
 from layouts import frequency_to_channel
+from native_scan_bridge import (ScanRequest, completion as scan_completion,
+                                decode_request as decode_scan_request,
+                                encode_result as encode_scan_result)
 
 VERSION = 2
 NOT_FOUND = 0
@@ -206,6 +209,45 @@ class NativeRadioPublisher:
             raise RuntimeError('AIC native transmit read: %08x' % status)
         validate_frame(frame, from_service=False)
         return frame
+
+    def enable_scan_bridge(self):
+        if not self.connect:
+            raise RuntimeError('AIC native control is closed')
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 8, None, 0, None, None)
+        if status:
+            raise RuntimeError('AIC native scan enable: %08x' % status)
+
+    def next_scan_request(self):
+        if not self.connect:
+            return None
+        request = ScanRequest()
+        size = c.c_size_t(c.sizeof(request))
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 5, None, 0, c.byref(request), c.byref(size))
+        if status == NOT_READY:
+            return None
+        if status or size.value != c.sizeof(request):
+            raise RuntimeError('AIC native scan read: %08x' % status)
+        return decode_scan_request(request)
+
+    def submit_scan_result(self, sequence, item):
+        if not self.connect:
+            raise RuntimeError('AIC native control is closed')
+        result = encode_scan_result(sequence, item)
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 6, c.byref(result), c.sizeof(result), None, None)
+        if status:
+            raise RuntimeError('AIC native scan result: %08x' % status)
+
+    def complete_scan(self, sequence, status_code=0):
+        if not self.connect:
+            raise RuntimeError('AIC native control is closed')
+        result = scan_completion(sequence, status_code)
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 7, c.byref(result), c.sizeof(result), None, None)
+        if status:
+            raise RuntimeError('AIC native scan complete: %08x' % status)
 
     def safe_publish(self, powered, target, mac):
         if not self.connect:

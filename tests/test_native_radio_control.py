@@ -5,6 +5,7 @@ from native_radio_control import (Command, NativeRadioPublisher, RadioState,
                                   decode_command, state_for, NOT_READY,
                                   ACTION_FRAME, ETHERNET_FRAME,
                                   frame_for_service_rx, validate_frame)
+from native_scan_bridge import ScanRequest
 
 
 class FakeIOKit:
@@ -81,6 +82,26 @@ class NativeRadioControlTests(unittest.TestCase):
         self.assertEqual(NativeRadioPublisher(io, 7).next_power_command(),
                          (7, False))
         self.assertEqual(io.calls[0][:3], (7, 2, 0))
+
+    def test_scan_handoff_uses_bounded_selectors(self):
+        request = ScanRequest()
+        request.version = 2
+        request.sequence = 9
+        request.type = 1
+        request.channelCount = 1
+        request.selectedChannels[44 // 8] = 1 << (44 % 8)
+        io = FakeIOKit(command=request)
+        bridge = NativeRadioPublisher(io, 7)
+        bridge.enable_scan_bridge()
+        decoded = bridge.next_scan_request()
+        self.assertEqual(decoded['frequencies'], (5220,))
+        item = {'bssid': '02:11:22:33:44:55', 'frequency': 5220,
+                'rssi': -57, '_beacon': {'interval': 100,
+                                        'capability': 0x11, 'ies': b'\x00\x03AIC'}}
+        bridge.submit_scan_result(9, item)
+        bridge.complete_scan(9)
+        self.assertEqual([call[1:3] for call in io.calls],
+                         [(8, 0), (5, 0), (6, 1100), (7, 16)])
 
     def test_no_command_is_not_an_error(self):
         self.assertIsNone(NativeRadioPublisher(FakeIOKit(status=NOT_READY), 7)

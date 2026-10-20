@@ -118,7 +118,6 @@
     IOReturn setWCL_LEGACY_ROAM_PROFILE_CONFIG(apple80211_legacy_roam_profile_config*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ROAM_PROFILE_CONFIG(apple80211_roam_profile_config*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ROAM_USER_CACHE(apple80211_user_roam_cache*) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_SCAN_ABORT(void*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_REAL_TIME_MODE(apple80211_wcl_real_time_mode*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ARP_MODE(apple80211_wcl_arp_mode*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_JOIN_ABORT(void*) override { return kIOReturnUnsupported; }

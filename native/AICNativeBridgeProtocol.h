@@ -13,6 +13,7 @@ enum {
     kAICNativeNextScan = 5,
     kAICNativeSubmitScanResult = 6,
     kAICNativeCompleteScan = 7,
+    kAICNativeEnableScanBridge = 8,
     kAICNativeSetPower = 1,
     kAICNativeFrameEthernet = 1,
     kAICNativeFrameAction = 2,

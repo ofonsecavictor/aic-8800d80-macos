@@ -5,6 +5,9 @@
 
 extern "C" IOReturn AICNativeCopyRadioState(
     IOService *service, AICNativeRadioState *state);
+extern "C" IOReturn AICNativeBeginScan(
+    IOService *service, const AICWCLScanRequest *request);
+extern "C" IOReturn AICNativeAbortScan(IOService *service);
 
 OSDefineMetaClassAndStructors(AICInfraInterface, IO80211InfraProtocol)
 
@@ -84,7 +87,11 @@ IOReturn AICInfraInterface::setWCL_SCAN_REQ(apple80211ScanRequest *request) {
     AICWCLScanRequest decoded = {};
     if (!AICDecodeWCLScanRequest(request, kAICWCLScanRequestSize, decoded))
         return kIOReturnBadArgument;
-    // Do not return success until the service can execute this exact request
-    // and publish result/complete messages back to macOS.
-    return kIOReturnUnsupported;
+    return radioProvider ? AICNativeBeginScan(radioProvider, &decoded)
+                         : kIOReturnNotReady;
+}
+
+IOReturn AICInfraInterface::setWCL_SCAN_ABORT(void *) {
+    return radioProvider ? AICNativeAbortScan(radioProvider)
+                         : kIOReturnNotReady;
 }

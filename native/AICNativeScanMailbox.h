@@ -15,6 +15,8 @@ struct AICNativeScanTicket {
 
 class AICNativeScanMailbox {
 public:
+    static constexpr uint64_t kTimeoutMillis = 20000;
+
     bool begin(const AICWCLScanRequest &request, uint64_t nowMillis,
                AICNativeScanTicket *ticket) {
         if (!ticket || pending || nowMillis > UINT64_MAX - kTimeoutMillis ||
@@ -85,7 +87,6 @@ public:
     uint32_t resultCount() const { return results; }
 
 private:
-    static constexpr uint64_t kTimeoutMillis = 20000;
     static constexpr uint32_t kMaxResults = 256;
     AICNativeScanTicket current = {};
     uint64_t deadline = 0;
