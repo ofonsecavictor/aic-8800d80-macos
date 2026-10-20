@@ -1,12 +1,16 @@
 // Compile-only AIC IO80211Controller ABI experiment for macOS 15.
-// A disabled-match Info.plist exists; no USB ownership or installation exists.
-// This file must not be loaded as a driver until the radio bridge and rollback
-// path are implemented and verified in an isolated test EFI.
+// The packaged Info.plist has a disabled match. A separate build-only variant
+// compiles AIC_NATIVE_INTERFACE_PROBE, but it is never packaged or loaded:
+// CoreCapture initialization, concurrent teardown, scan/join callbacks and
+// the bidirectional data path are still unverified. The stable USB service
+// retains ownership of the dongle.
 
 #include <IO80211ControllerV2.h>
 #include <IOKit/IOLocks.h>
+#include <IOKit/IOCommandGate.h>
 #include <IOKit/network/IOOutputQueue.h>
 #include <IOKit/network/IOEthernetInterface.h>
+#include <IOKit/network/IONetworkMedium.h>
 #include <libkern/version.h>
 #include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSString.h>
@@ -18,6 +22,7 @@
 #include "AICNativeCapabilityBits.h"
 #include "AICNativeStartupPolicy.h"
 #include "AICNativeBridgeUserClient.h"
+#include "AICNativeEthernetInterface.h"
 
 class AICNativeUSBProvider final : public IOService {
     OSDeclareDefaultStructors(AICNativeUSBProvider)
@@ -90,6 +95,7 @@ public:
     bool createWorkQueue() override { return queue != nullptr; }
     bool start(IOService *provider) override;
     void stop(IOService *provider) override;
+    IONetworkInterface *createInterface() override;
     bool isCommandProhibited(int command) override;
     IOReturn getHardwareAddress(IOEthernetAddress *address) override;
     SInt32 handleCardSpecific(IO80211SkywalkInterface *interface,
@@ -126,8 +132,18 @@ public:
     UInt32 outputPacket(mbuf_t packet, void *parameter) override;
 
 private:
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    bool attachNativeInterface();
+    void detachNativeInterface();
+    static IOReturn attachNativeGated(OSObject *owner, void *, void *, void *, void *);
+#endif
     IO80211WorkQueue *queue = nullptr;
-    IOEthernetInterface *bsdInterface = nullptr; // Set only after native registration.
+    IOCommandGate *commandGate = nullptr;
+    AICInfraInterface *nativeInterface = nullptr;
+    AICNativeEthernetInterface *bsdInterface = nullptr;
+    bool nativeAttached = false;
+    bool controllerAttached = false;
+    bool nativeStarted = false;
     IOLock *stateLock = nullptr;
     AICNativeRadioState radioState = {};
     bool stateReady = false;
@@ -146,6 +162,14 @@ bool AICAirPortController::init(OSDictionary *dictionary) {
 }
 
 void AICAirPortController::free() {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    detachNativeInterface();
+#endif
+    if (commandGate) {
+        if (queue && commandGate->getWorkLoop())
+            queue->removeEventSource(commandGate);
+        OSSafeReleaseNULL(commandGate);
+    }
     if (stateLock) {
         IOLockLock(stateLock);
         receivedFrames.clear();
@@ -175,6 +199,11 @@ bool AICAirPortController::start(IOService *provider) {
         return false;
     }
     queue->retain();
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    commandGate = IOCommandGate::commandGate(this);
+    if (!commandGate || queue->addEventSource(commandGate) != kIOReturnSuccess)
+        return false;
+#endif
     if (!IO80211Controller::start(provider)) return false;
     registerService();
     return true;
@@ -186,6 +215,9 @@ bool AICAirPortController::start(IOService *provider) {
 }
 
 void AICAirPortController::stop(IOService *provider) {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    detachNativeInterface();
+#endif
     if (stateLock) {
         IOLockLock(stateLock);
         receivedFrames.clear();
@@ -197,8 +229,141 @@ void AICAirPortController::stop(IOService *provider) {
     IO80211Controller::stop(provider);
 }
 
-bool AICAirPortController::isCommandProhibited(int) {
+IONetworkInterface *AICAirPortController::createInterface() {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    if (!nativeInterface || !commandGate) return nullptr;
+    auto *interface = OSTypeAlloc(AICNativeEthernetInterface);
+    if (!interface) return nullptr;
+    if (!interface->initForAIC(this, nativeInterface, commandGate)) {
+        interface->release();
+        return nullptr;
+    }
+    return interface;
+#else
+    return nullptr;
+#endif
+}
+
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+IOReturn AICAirPortController::attachNativeGated(
+    OSObject *owner, void *, void *, void *, void *) {
+    auto *controller = OSDynamicCast(AICAirPortController, owner);
+    if (!controller || !controller->commandGate || !controller->queue ||
+        !controller->queue->inGate()) return kIOReturnNotPermitted;
+    return controller->attachNativeInterface() ? kIOReturnSuccess
+                                                : kIOReturnNotReady;
+}
+
+bool AICAirPortController::attachNativeInterface() {
+    if (nativeInterface) return nativeStarted && bsdInterface;
+    IOEthernetAddress address = {};
+    if (!commandGate || !stateReady ||
+        getHardwareAddress(&address) != kIOReturnSuccess) return false;
+    OSDictionary *media = OSDictionary::withCapacity(1);
+    if (!media) return false;
+    IONetworkMedium *medium = IONetworkMedium::medium(kIOMediumIEEE80211, 54000000);
+    if (!medium) {
+        media->release();
+        return false;
+    }
+    IONetworkMedium::addMedium(media, medium);
+    const bool published = publishMediumDictionary(media);
+    if (published) {
+        setCurrentMedium(medium);
+        setSelectedMedium(medium);
+    }
+    medium->release();
+    media->release();
+    if (!published) return false;
+
+    nativeInterface = OSTypeAlloc(AICInfraInterface);
+    if (!nativeInterface || !nativeInterface->initForAIC(
+            this, reinterpret_cast<const uint8_t *>(&address))) {
+        detachNativeInterface();
+        return false;
+    }
+    nativeInterface->setInterfaceRole(1);
+    nativeInterface->setInterfaceId(1);
+    nativeAttached = nativeInterface->attach(this);
+    if (!nativeAttached) {
+        detachNativeInterface();
+        return false;
+    }
+    controllerAttached = attachInterface(nativeInterface, this);
+    if (!controllerAttached) {
+        detachNativeInterface();
+        return false;
+    }
+    IONetworkInterface *bsd = nullptr;
+    if (!IONetworkController::attachInterface(&bsd, false)) {
+        detachNativeInterface();
+        return false;
+    }
+    auto *typedBSD = OSDynamicCast(AICNativeEthernetInterface, bsd);
+    if (!typedBSD) {
+        if (bsd) IONetworkController::detachInterface(bsd, true);
+        detachNativeInterface();
+        return false;
+    }
+    IOLockLock(stateLock);
+    bsdInterface = typedBSD;
+    IOLockUnlock(stateLock);
+    IOSkywalkEthernetInterface::RegistrationInfo info = {};
+    if (!nativeInterface->initRegistrationInfo(&info, 1, sizeof(info)) ||
+        !nativeInterface->mExpansionData ||
+        !nativeInterface->mExpansionData2) {
+        detachNativeInterface();
+        return false;
+    }
+    auto *networkInfo = static_cast<IOSkywalkNetworkInterface::RegistrationInfo *>(
+        IOMalloc(sizeof(IOSkywalkNetworkInterface::RegistrationInfo)));
+    auto *ethernetInfo = static_cast<IOSkywalkEthernetInterface::RegistrationInfo *>(
+        IOMalloc(sizeof(IOSkywalkEthernetInterface::RegistrationInfo)));
+    if (!networkInfo || !ethernetInfo) {
+        if (networkInfo) IOFree(networkInfo, sizeof(*networkInfo));
+        if (ethernetInfo) IOFree(ethernetInfo, sizeof(*ethernetInfo));
+        detachNativeInterface();
+        return false;
+    }
+    bcopy(&info, networkInfo, sizeof(*networkInfo));
+    bcopy(&info, ethernetInfo, sizeof(*ethernetInfo));
+    nativeInterface->mExpansionData->fRegistrationInfo = networkInfo;
+    nativeInterface->mExpansionData2->fRegistrationInfo = ethernetInfo;
+    nativeInterface->deferBSDAttach(true);
+    nativeStarted = nativeInterface->start(this);
+    if (!nativeStarted) {
+        detachNativeInterface();
+        return false;
+    }
+    setLinkStatus(kIONetworkLinkValid);
+    bsdInterface->registerService();
     return true;
+}
+
+void AICAirPortController::detachNativeInterface() {
+    if (stateLock) {
+        IOLockLock(stateLock);
+        AICNativeEthernetInterface *bsd = bsdInterface;
+        bsdInterface = nullptr;
+        IOLockUnlock(stateLock);
+        if (bsd) IONetworkController::detachInterface(bsd, true);
+    }
+    if (nativeInterface) {
+        if (nativeStarted) nativeInterface->stop(this);
+        if (controllerAttached) detachInterface(nativeInterface, true);
+        if (nativeAttached) nativeInterface->detach(this);
+        OSSafeReleaseNULL(nativeInterface);
+    }
+    nativeStarted = controllerAttached = nativeAttached = false;
+}
+#endif
+
+bool AICAirPortController::isCommandProhibited(int) {
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    return false;
+#else
+    return true;
+#endif
 }
 
 IOReturn AICAirPortController::getHardwareAddress(IOEthernetAddress *address) {
@@ -297,6 +462,10 @@ IOReturn AICAirPortController::publishRadioState(
     stateReady = true;
     powerMailbox.observe(state.powered != 0);
     IOLockUnlock(stateLock);
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+    if (commandGate && !nativeInterface)
+        return commandGate->runAction(attachNativeGated);
+#endif
     return kIOReturnSuccess;
 }
 

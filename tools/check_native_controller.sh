@@ -22,10 +22,11 @@ stage=$(/usr/bin/mktemp -d /private/tmp/aic-native-compile.XXXXXX)
 cleanup() {
     /bin/rm -f "$stage/AICAirPortController.o"
     /bin/rm -f "$stage/AICAirPortController-headless.o"
+    /bin/rm -f "$stage/AICAirPortController-native.o"
     /bin/rm -f "$stage/AICNativeBridgeUserClient.o"
     /bin/rm -f "$stage/AICInfraInterface.o"
     /bin/rm -f "$stage/AICNativeEthernetInterface.o"
-    /bin/rm -f "$stage/AICProbe" "$stage/AICHeadlessProbe" "$stage/undefined.txt"
+    /bin/rm -f "$stage/AICProbe" "$stage/AICHeadlessProbe" "$stage/AICNativeRegistrationProbe" "$stage/undefined.txt"
     /bin/rm -f "$stage/native_bridge_protocol_test"
     /bin/rm -f "$stage/native_scan_request_test"
     /bin/rm -f "$stage/native_wcl_beacon_test"
@@ -95,6 +96,18 @@ echo 'Endereço MAC WCL nativo: teste local OK.'
     -I"$(dirname "$1")" -I"$1" -I"$2" -I"$kernel_headers" \
     "$repo_dir/native/AICAirPortController.cpp"
 /usr/bin/file "$stage/AICAirPortController-headless.o"
+# Compile registration in a separate, never-packaged object. It is not a
+# runtime test and must not change the disabled-match bundle below.
+/usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
+    -mkernel -c -o "$stage/AICAirPortController-native.o" \
+    -Wno-deprecated-declarations -Wno-invalid-offsetof \
+    -Wno-inconsistent-missing-override \
+    -DKERNEL=1 -DAIRPORT_WCL=1 -D__PRIVATE_SPI__=1 -DIO80211FAMILY_V2=1 \
+    -D__IO80211_TARGET=__MAC_15_2 -DAIC_HEADLESS_BRIDGE_PROBE=1 \
+    -DAIC_NATIVE_INTERFACE_PROBE=1 -include "$1/apple_private_spi.h" \
+    -I"$(dirname "$1")" -I"$1" -I"$2" -I"$kernel_headers" \
+    "$repo_dir/native/AICAirPortController.cpp"
+/usr/bin/file "$stage/AICAirPortController-native.o"
 /usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
     -mkernel -c -o "$stage/AICNativeBridgeUserClient.o" \
     -Wno-deprecated-declarations -Wno-invalid-offsetof \
@@ -138,12 +151,19 @@ echo 'Endereço MAC WCL nativo: teste local OK.'
     "$stage/AICInfraInterface.o" "$stage/AICNativeEthernetInterface.o" \
     "$(dirname "$2")/Library/x86_64/libkmod.a"
 /usr/bin/file "$stage/AICHeadlessProbe"
+/usr/bin/xcrun ld -kext -arch x86_64 -undefined dynamic_lookup \
+    -o "$stage/AICNativeRegistrationProbe" \
+    "$stage/AICAirPortController-native.o" "$stage/AICNativeBridgeUserClient.o" \
+    "$stage/AICInfraInterface.o" "$stage/AICNativeEthernetInterface.o" \
+    "$(dirname "$2")/Library/x86_64/libkmod.a"
+/usr/bin/file "$stage/AICNativeRegistrationProbe"
 
 boot_kc=/System/Library/KernelCollections/BootKernelExtensions.kc
 system_kc=/System/Library/KernelCollections/SystemKernelExtensions.kc
 if [ -f "$boot_kc" ] && [ -f "$system_kc" ]; then
     { /usr/bin/xcrun nm -u "$stage/AICProbe"
-      /usr/bin/xcrun nm -u "$stage/AICHeadlessProbe"; } |
+      /usr/bin/xcrun nm -u "$stage/AICHeadlessProbe"
+      /usr/bin/xcrun nm -u "$stage/AICNativeRegistrationProbe"; } |
         /usr/bin/awk 'NF {print $NF}' | /usr/bin/sort -u > "$stage/undefined.txt"
     { /usr/bin/xcrun nm -g "$boot_kc" 2>/dev/null
       /usr/bin/xcrun nm -g "$system_kc" 2>/dev/null; } |
