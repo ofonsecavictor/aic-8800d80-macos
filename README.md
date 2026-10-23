@@ -24,7 +24,7 @@ A versão estável atual é a **v1.3.4**, com driver nativo **0.0.18**.
 - Recepção Wi‑Fi 6 (HE SU) em canal de 80 MHz.
 - Reconexão e funcionamento após reinicialização validados.
 - Máxima medida neste Hackintosh: **220.41 Mbps de download** e
-  **29,35 Mbps de upload** no Ookla Speedtest.
+  **34.19 Mbps de upload** no Ookla Speedtest.
 - Durante o teste: zero registros USB malformados e zero descarte da fila RX.
 
 A velocidade não é garantida. Ela varia conforme sinal, interferência, canal,
