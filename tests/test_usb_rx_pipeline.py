@@ -19,9 +19,10 @@ class UsbRxPipelineTests(unittest.TestCase):
             readers=wifi.start_data_readers(target)
 
         self.assertEqual(len(readers),wifi.USB_DATA_READ_DEPTH)
-        self.assertEqual(len(readers),8)
+        self.assertEqual(len(readers),16)
         self.assertEqual([item.specification['name'] for item in created],
-                         ['AIC USB data RX %u'%index for index in range(8)])
+                         ['AIC USB data RX %u'%index
+                          for index in range(wifi.USB_DATA_READ_DEPTH)])
         self.assertTrue(all(item.specification['target'] is target
                             and item.specification['daemon'] for item in created))
         for item in created:item.start.assert_called_once_with()

@@ -17,11 +17,12 @@ from collections import deque
 from protocol import command,messages
 from layouts import passive_scan,network,association_diagnostics,connect_request,me_config_request,me_channel_config_request,channel_to_frequency,frequency_to_channel,frequency_band,connectable_frequency
 from reports import write_report
-from wpa2 import Supplicant,pmk,ethernet_frames,transmit_frame,key_request,parse_key,validate_rsn
+from wpa2 import (Supplicant,pmk,ethernet_frames,transmit_frame,
+                  aggregate_transmit_frames,key_request,parse_key,validate_rsn)
 
 HERE=Path(__file__).resolve().parent
-USB_DATA_READ_DEPTH=8
-USB_DATA_QUEUE_DEPTH=2048
+USB_DATA_READ_DEPTH=16
+USB_DATA_QUEUE_DEPTH=4096
 USB_DATA_DRAIN_BATCH=256
 
 def start_data_readers(target,depth=USB_DATA_READ_DEPTH):
@@ -57,6 +58,10 @@ class Wifi:
         lib.wifi_read.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.POINTER(ctypes.c_uint32)];lib.wifi_read.restype=ctypes.c_uint32
         lib.wifi_read_data.argtypes=lib.wifi_read.argtypes;lib.wifi_read_data.restype=ctypes.c_uint32
         lib.wifi_write_data.argtypes=lib.wifi_write.argtypes;lib.wifi_write_data.restype=ctypes.c_uint32
+        lib.wifi_write_data_async.argtypes=lib.wifi_write.argtypes;lib.wifi_write_data_async.restype=ctypes.c_uint32
+        lib.wifi_write_data_batch_async.argtypes=lib.wifi_write.argtypes;lib.wifi_write_data_batch_async.restype=ctypes.c_uint32
+        lib.wifi_tx_snapshot.argtypes=[ctypes.c_void_p]+[ctypes.c_void_p]*7;lib.wifi_tx_snapshot.restype=ctypes.c_uint32
+        lib.wifi_flush_data_writes.argtypes=[ctypes.c_void_p,ctypes.c_uint32];lib.wifi_flush_data_writes.restype=ctypes.c_uint32
         error=ctypes.c_uint32();self.handle=lib.wifi_open(ctypes.byref(error))
         if not self.handle and error.value in (0xe00002c0,0xe00002bc):
             print('Aguardando o serviço inicializar o AIC na porta USB...',flush=True)
@@ -73,18 +78,27 @@ class Wifi:
         self.scan_requested=threading.Event();self.active_vif=None
         self.connected_scan=False;self.connected_scan_deadline=0;self.connected_results={}
         self.rx_diagnostics={'records':0,'malformed':0,'ethernet_frames':0,
+                             'ethernet_bytes':0,
                              'queue_dropped':0,'queue_highwater':0,
                              'hardware':{},'phy':{},'ether_types':{},
                              'sample_header':None}
         self.tx_sequence=0;self.tx_confirmations={}
         self.tx_sample_pending=set()
+        self.tx_sample_results={};self.tx_condition=threading.Condition()
+        # The installed D80 firmware did not confirm the optional aggregate
+        # wire format. Keep the validated multi-URB path as the runtime mode.
+        self.tx_aggregation=False
         self.tx_diagnostics={'data_submitted':0,'sample_requested':0,
                              'sample_confirmed':0,'sample_acked':0,
-                             'sample_nacked':0}
+                             'sample_nacked':0,'usb_bytes_submitted':0,
+                             'ethernet_bytes_submitted':0,
+                             'submit_ns_total':0,'submit_ns_max':0,
+                             'aggregate_transfers':0,'aggregate_frames':0,
+                             'aggregate_fallbacks':0}
         # Keep several bulk-IN requests outstanding, like the Linux driver's
         # RX URB pool.  A single synchronous ReadPipeTO request limits one
         # Ethernet frame per USB round trip (about 18 Mbit/s on this host).
-        # Eight readers keep the USB scheduler supplied without changing the
+        # Sixteen readers keep the USB scheduler supplied without changing the
         # stable kernel bridge or the FullMAC protocol.
         self.rx=queue.Queue(maxsize=USB_DATA_QUEUE_DEPTH);self.control_rx=queue.Queue(maxsize=128)
         self.stop_rx=threading.Event()
@@ -97,6 +111,8 @@ class Wifi:
             self.stop_rx.set()
             for reader in self.readers:reader.join()
             self.control_reader.join()
+            flush=getattr(self.lib,'wifi_flush_data_writes',None)
+            if flush is not None:flush(self.handle,5000)
             self.lib.wifi_close(self.handle);self.handle=None
         self.lock.close()
 
@@ -413,6 +429,8 @@ class Wifi:
         diagnostics=getattr(self,'rx_diagnostics',None)
         if diagnostics is None:return decoded
         diagnostics['ethernet_frames']+=len(decoded)
+        diagnostics['ethernet_bytes']=diagnostics.get('ethernet_bytes',0)+sum(
+            len(frame) for frame in decoded)
         for frame in decoded:
             key=frame[12:14].hex();counters=diagnostics['ether_types']
             if key not in counters and len(counters)>=16:key='other'
@@ -424,10 +442,23 @@ class Wifi:
 
     def record_tx_confirmation(self,value,index):
         if index in self.tx_sample_pending:
-            self.tx_sample_pending.remove(index)
-            self.tx_diagnostics['sample_confirmed']+=1
-            self.tx_diagnostics['sample_acked' if value&9==9 else 'sample_nacked']+=1
+            with self.tx_condition:
+                self.tx_sample_pending.remove(index)
+                self.tx_sample_results[index]=value
+                self.tx_diagnostics['sample_confirmed']+=1
+                self.tx_diagnostics['sample_acked' if value&9==9 else 'sample_nacked']+=1
+                self.tx_condition.notify_all()
         else:self.tx_confirmations[index]=value
+
+    def tx_transport_diagnostics(self):
+        snapshot=getattr(self.lib,'wifi_tx_snapshot',None)
+        if snapshot is None:return {}
+        values=[ctypes.c_uint64() for _ in range(4)]+[ctypes.c_uint32() for _ in range(3)]
+        status=snapshot(self.handle,*(ctypes.byref(value) for value in values))
+        if status:return {'snapshot_error':'%08x'%status}
+        keys=('async_submitted','async_completed','async_bytes','async_errors',
+              'async_inflight','async_highwater','async_last_error')
+        return dict(zip(keys,(value.value for value in values)))
 
     def data_write(self,ethernet,vif,station,label='EAPOL',quiet=False,
                    require_confirmation=True,sample_confirmation=False):
@@ -439,7 +470,12 @@ class Wifi:
                              (0x80000000|index) if (require_confirmation or sample_confirmation) else 0)
         if sample_confirmation:
             self.tx_sample_pending.add(index)
-        status=self.lib.wifi_write_data(self.handle,ctypes.create_string_buffer(frame),len(frame))
+        writer=(getattr(self.lib,'wifi_write_data_async',None)
+                if not require_confirmation else None)
+        if writer is None:writer=self.lib.wifi_write_data
+        started=time.perf_counter_ns()
+        status=writer(self.handle,ctypes.create_string_buffer(frame),len(frame))
+        elapsed=time.perf_counter_ns()-started
         if status:
             self.tx_sample_pending.discard(index)
             # Keep only non-sensitive transport metadata for the probe report.
@@ -450,6 +486,12 @@ class Wifi:
                 status,len(frame)))
         if not require_confirmation:
             self.tx_diagnostics['data_submitted']+=1
+            self.tx_diagnostics['usb_bytes_submitted']+=len(frame)
+            self.tx_diagnostics['ethernet_bytes_submitted']=self.tx_diagnostics.get(
+                'ethernet_bytes_submitted',0)+len(ethernet)
+            self.tx_diagnostics['submit_ns_total']+=elapsed
+            self.tx_diagnostics['submit_ns_max']=max(
+                self.tx_diagnostics['submit_ns_max'],elapsed)
             if sample_confirmation:self.tx_diagnostics['sample_requested']+=1
             return True # Submitted to USB; radio status is tracked separately.
         deadline=time.monotonic()+3
@@ -464,6 +506,67 @@ class Wifi:
             if quiet:return False # Normal packet loss; the IP transport may retry.
             raise RuntimeError('Roteador não confirmou o pacote %s: %08x'%(label,value))
         return True
+
+    def data_write_batch(self,ethernets,vif,station):
+        """Submit native Ethernet frames using the D80 USB TX aggregate ABI."""
+        ethernets=tuple(ethernets)
+        if not ethernets:return 0
+        if self.tx_aggregation is False:
+            for ethernet in ethernets:
+                self.data_write(ethernet,vif,station,'dados',quiet=True,
+                                require_confirmation=False)
+            return len(ethernets)
+        submitted=0
+        for start in range(0,len(ethernets),10):
+            chunk=ethernets[start:start+10]
+            probe=self.tx_aggregation is None
+            probe_index=None;frames=[]
+            for position,ethernet in enumerate(chunk):
+                confirmation=0
+                if probe and position==len(chunk)-1:
+                    probe_index=self.tx_sequence;self.tx_sequence+=1
+                    confirmation=0x80000000|probe_index
+                    with self.tx_condition:self.tx_sample_pending.add(probe_index)
+                frames.append(transmit_frame(ethernet,vif,station,confirmation))
+            aggregate=aggregate_transmit_frames(frames)
+            started=time.perf_counter_ns()
+            status=self.lib.wifi_write_data_batch_async(
+                self.handle,ctypes.create_string_buffer(aggregate),len(aggregate))
+            elapsed=time.perf_counter_ns()-started
+            if status:
+                if probe_index is not None:
+                    with self.tx_condition:self.tx_sample_pending.discard(probe_index)
+                raise RuntimeError('USB aggregate data write: %08x length=%d'%(
+                    status,len(aggregate)))
+            self.tx_diagnostics['data_submitted']+=len(chunk)
+            self.tx_diagnostics['usb_bytes_submitted']+=len(aggregate)
+            self.tx_diagnostics['ethernet_bytes_submitted']=self.tx_diagnostics.get(
+                'ethernet_bytes_submitted',0)+sum(len(frame) for frame in chunk)
+            self.tx_diagnostics['submit_ns_total']+=elapsed
+            self.tx_diagnostics['submit_ns_max']=max(
+                self.tx_diagnostics['submit_ns_max'],elapsed)
+            self.tx_diagnostics['aggregate_transfers']+=1
+            self.tx_diagnostics['aggregate_frames']+=len(chunk)
+            submitted+=len(chunk)
+            if probe_index is not None:
+                deadline=time.monotonic()+1
+                with self.tx_condition:
+                    while (probe_index not in self.tx_sample_results and
+                           time.monotonic()<deadline):
+                        self.tx_condition.wait(deadline-time.monotonic())
+                    confirmed=self.tx_sample_results.pop(probe_index,None)
+                    self.tx_sample_pending.discard(probe_index)
+                if confirmed is None:
+                    self.tx_aggregation=False
+                    self.tx_diagnostics['aggregate_fallbacks']+=1
+                    print('AIC USB TX aggregation not confirmed; using individual async writes.',flush=True)
+                    for ethernet in chunk:
+                        self.data_write(ethernet,vif,station,'dados',quiet=True,
+                                        require_confirmation=False)
+                else:
+                    self.tx_aggregation=True
+                    print('AIC USB TX aggregation confirmed by firmware.',flush=True)
+        return submitted
 
     def authenticate(self,vif,station,target,key,initial):
         ap=bytes.fromhex(target['bssid'].replace(':',''))

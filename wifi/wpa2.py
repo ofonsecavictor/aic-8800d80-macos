@@ -197,6 +197,27 @@ def transmit_frame(ethernet,vif,station,confirmation=0):
         body+=b'\x00'
     return struct.pack('<HBB',4+len(body),1,0)+body
 
+def aggregate_transmit_frames(frames):
+    """Encode up to ten standard AIC TX records in the firmware USB format."""
+    frames=tuple(frames)
+    if not 1<=len(frames)<=10:
+        raise ValueError('Invalid AIC USB TX aggregate count')
+    aggregate=bytearray()
+    for frame in frames:
+        if (not isinstance(frame,bytes) or not 32<=len(frame)<=2048 or
+                struct.unpack_from('<H',frame)[0]!=len(frame) or
+                frame[2:4]!=b'\x01\x00'):
+            raise ValueError('Invalid AIC USB TX record')
+        # CONFIG_USB_TX_AGGR in the reference prepends two copies of the
+        # normal record length, then retains the original <HBB> USB header.
+        aggregate+=struct.pack('<HH',len(frame),len(frame))+frame
+        aggregate+=bytes((-len(aggregate))%4)
+    if len(aggregate)%512==0:
+        # IOUSBLib has no URB_ZERO_PACKET flag.  A zero record produces the
+        # required short final USB packet and is the firmware's terminator.
+        aggregate+=bytes(4)
+    return bytes(aggregate)
+
 def key_request(vif,station,key,index=0,pairwise=True):
     if len(key)!=16:raise ValueError('Only CCMP128 is supported')
     return struct.pack('<BB2xB3x32s4B',index,station,16,key,2,vif,0,int(pairwise))

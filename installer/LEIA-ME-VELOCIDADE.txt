@@ -1,4 +1,4 @@
-AIC 8800D80 — Instalador completo 1.3.4 / Wi-Fi nativo 0.0.18
+AIC 8800D80 — Instalador completo 1.3.5 / Wi-Fi nativo 0.0.18
 
 Corrige a causa identificada dos panics da versão 1.3.3: os descritores de
 memória são preparados antes de readBytes/writeBytes e liberados depois,
@@ -6,10 +6,11 @@ inclusive em cópias incompletas. O driver 0.0.18 foi validado após reinício e
 permaneceu inalterado durante os ajustes finais de velocidade. Não reinstale o
 pacote antigo 1.3.3.
 
-Esta atualização mantém o Wi-Fi nativo e reduz a sobrecarga da ponte de dados:
-até 16 frames Ethernet passam em cada chamada entre o kernel e o serviço AIC,
-em vez de uma chamada por frame. A fila de transmissão também cresce para
-absorver rajadas de download sem descartar pacotes precocemente.
+Esta atualização mantém o Wi-Fi nativo e reduz a sobrecarga do transporte USB.
+As transmissões de dados usam até 200 requisições assíncronas simultâneas,
+mantendo EAPOL e comandos críticos no caminho síncrono. Na recepção, 16
+leituras USB simultâneas e uma fila de 4.096 registros absorvem rajadas sem
+descartar pacotes precocemente.
 
 O pacote inclui firmware, carregador USB, serviço Wi-Fi, biblioteca de
 transporte, aplicativo de recuperação e driver nativo. Não exige aplicar
@@ -20,14 +21,18 @@ os hashes da EFI e do driver e guardar uma cópia de recuperação. Também
 é possível instalar a partir do modo legado. Este pacote permanece
 específico deste computador e exige o pendrive de recuperação verificado.
 
-Corrige o transporte de lotes grandes pela API do IOKit, usa oito leituras USB
-simultâneas, fila de 2.048 registros, drenagem de até 256 registros por ciclo e
+Corrige o transporte de lotes grandes pela API do IOKit, usa 16 leituras USB
+simultâneas, fila de 4.096 registros, drenagem de até 256 registros por ciclo e
 submissão de até 16 frames Ethernet por chamada. A associação em 5 GHz solicita
-operação Wi-Fi 6 em 80 MHz.
+operação Wi-Fi 6 em 80 MHz. A agregação USB opcional permanece desativada,
+porque o firmware deste dongle não a confirmou; o modo publicado usa somente o
+caminho assíncrono individual validado.
 
-Neste Hackintosh, o teste final mediu 190,24 Mbps de download e 29,35 Mbps de
-upload, com zero registros USB malformados e zero descarte da fila. O resultado
-não é garantia para outras redes ou máquinas.
+Neste Hackintosh, o pico medido foi 220,41 Mbps de download e 34,19 Mbps de
+upload. A validação final pública desta versão mediu 163,74/29,03 Mbps. Durante
+os testes houve zero registros USB malformados, zero descarte da fila e zero
+erro nas transmissões assíncronas. O resultado não é garantia para outras redes
+ou máquinas.
 
 Inclui entrada Ethernet limitada pelo tamanho do protocolo, espera pela
 interface USB nova após reconexão e operação exclusivamente nativa. O app

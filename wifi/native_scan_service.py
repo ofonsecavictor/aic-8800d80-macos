@@ -43,7 +43,9 @@ class NativeScanSession:
         # Only the temporary diagnostic requests sparse radio TX status.
         self.tx_sample = os.environ.get('AIC_NATIVE_TX_SAMPLE') == '1'
         self.rx_ingress = {'accepted': 0, 'trimmed': 0, 'rejected': 0}
-        self.rx_report_at = time.monotonic() + 30
+        now = time.monotonic()
+        self.rx_report_at = now + 30
+        self.rate_previous = (now, 0, 0)
 
     def poll_control(self, active=False):
         power = self.bridge.next_power_command()
@@ -209,17 +211,35 @@ class NativeScanSession:
                                     ETHERNET_FRAME, bounded, self.frame_sequence, 0)
                                 receive_batch.append(packet)
                     if time.monotonic() >= self.rx_report_at:
+                        report_now = time.monotonic()
                         transport = {
                             key: self.wifi.rx_diagnostics.get(key)
                             for key in ('records', 'malformed', 'ethernet_frames',
-                                        'queue_highwater', 'queue_dropped')
+                                        'ethernet_bytes', 'queue_highwater',
+                                        'queue_dropped')
                         }
+                        previous_at, previous_rx, previous_tx = self.rate_previous
+                        current_rx = transport.get('ethernet_bytes') or 0
+                        current_tx = self.wifi.tx_diagnostics.get(
+                            'ethernet_bytes_submitted', 0)
+                        interval = max(report_now - previous_at, .001)
+                        rates = {
+                            'rx_mbps': round(max(0, current_rx-previous_rx)*8/
+                                             interval/1_000_000, 2),
+                            'tx_mbps': round(max(0, current_tx-previous_tx)*8/
+                                             interval/1_000_000, 2),
+                            'interval_seconds': round(interval, 2),
+                        }
+                        self.rate_previous = (report_now, current_rx, current_tx)
                         print('AIC native RX ingress: '+str(self.rx_ingress)
                               +' transport: '+str(transport)
+                              +' RATE: '+str(rates)
                               +' PHY: '+str(self.wifi.rx_diagnostics.get('phy',{}))
+                              +' TX: '+str(self.wifi.tx_diagnostics)
+                              +' USB TX: '+str(self.wifi.tx_transport_diagnostics())
                               +' header: '+str(self.wifi.rx_diagnostics.get('sample_header')),
                               flush=True)
-                        self.rx_report_at = time.monotonic() + 30
+                        self.rx_report_at = report_now + 30
                     if receive_batch:
                         submit = getattr(self.bridge, 'submit_received_frames', None)
                         if direct_submit is not None:
@@ -240,18 +260,26 @@ class NativeScanSession:
                             if packet is None:
                                 break
                             packets.append(packet)
+                    outbound = []
                     for packet in packets:
                         transmitted += 1
                         if packet.kind != ETHERNET_FRAME:
                             continue  # No peer-to-peer action-frame path in this phase.
                         frame = bytes(packet.data[:packet.length])
                         if frame[12:14] != b'\x88\x8e':
-                            sample = ({'sample_confirmation':
-                                       self.wifi.tx_diagnostics['data_submitted'] % 16 == 0}
-                                      if self.tx_sample else {})
-                            self.wifi.data_write(frame, vif, station, 'dados',
-                                                 quiet=True, require_confirmation=False,
-                                                 **sample)
+                            outbound.append(frame)
+                    if outbound:
+                        batch_writer = getattr(self.wifi, 'data_write_batch', None)
+                        if batch_writer is not None and not self.tx_sample:
+                            batch_writer(outbound, vif, station)
+                        else:
+                            for frame in outbound:
+                                sample = ({'sample_confirmation':
+                                           self.wifi.tx_diagnostics['data_submitted'] % 16 == 0}
+                                          if self.tx_sample else {})
+                                self.wifi.data_write(frame, vif, station, 'dados',
+                                                     quiet=True, require_confirmation=False,
+                                                     **sample)
                     # The bounded kernel TX mailbox can still fill during a
                     # browser asset burst. Yield only when both directions
                     # were idle; otherwise immediately drain the next batch.

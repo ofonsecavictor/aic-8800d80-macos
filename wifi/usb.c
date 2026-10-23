@@ -7,11 +7,101 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <time.h>
 #include <CommonCrypto/CommonSymmetricKeywrap.h>
-typedef struct {IOUSBInterfaceInterface300 **usb;UInt8 dataIn,dataOut,msgIn,msgOut;uint32_t location;uint64_t registryID;} Wifi;
+typedef struct Wifi Wifi;
+typedef struct {
+ Wifi *wifi;
+ uint32_t length;
+ uint8_t data[];
+} WifiTxRequest;
+struct Wifi {
+ IOUSBInterfaceInterface300 **usb;
+ UInt8 dataIn,dataOut,msgIn,msgOut;
+ uint32_t location;
+ uint64_t registryID;
+ pthread_mutex_t txLock;
+ pthread_cond_t txCondition;
+ pthread_t txThread;
+ CFRunLoopSourceRef txSource;
+ CFRunLoopRef txRunLoop;
+ uint64_t txSubmitted,txCompleted,txBytes,txErrors;
+ uint32_t txInFlight,txHighWater,txLastError;
+ int txSyncReady,txThreadStarted,txThreadReady,txStopping;
+};
+/* Match the reference driver's non-aggregated USB TX pool.  This remains
+ * bounded (roughly 300 KiB at Ethernet MTU) while keeping the bulk OUT pipe
+ * supplied across userspace/IOKit scheduling gaps. */
+#define WIFI_TX_ASYNC_DEPTH 200
 static int number(io_service_t s,CFStringRef k){int n=-1;CFTypeRef v=IORegistryEntryCreateCFProperty(s,k,0,0);if(v){if(CFGetTypeID(v)==CFNumberGetTypeID())CFNumberGetValue(v,kCFNumberIntType,&n);CFRelease(v);}return n;}
 static int stringIs(io_service_t s,CFStringRef k,CFStringRef expected){CFTypeRef v=IORegistryEntryCreateCFProperty(s,k,0,0);int ok=v&&CFGetTypeID(v)==CFStringGetTypeID()&&CFEqual(v,expected);if(v)CFRelease(v);return ok;}
-void wifi_close(Wifi *w){if(w){if(w->usb){(*w->usb)->USBInterfaceClose(w->usb);(*w->usb)->Release(w->usb);}free(w);}}
+static uint32_t wifi_tx_flush(Wifi *w,uint32_t timeoutMs){
+ if(!w||!w->txSyncReady)return 0;
+ struct timespec deadline;clock_gettime(CLOCK_REALTIME,&deadline);
+ deadline.tv_sec+=timeoutMs/1000;deadline.tv_nsec+=(long)(timeoutMs%1000)*1000000L;
+ if(deadline.tv_nsec>=1000000000L){deadline.tv_sec++;deadline.tv_nsec-=1000000000L;}
+ pthread_mutex_lock(&w->txLock);
+ while(w->txInFlight){
+  if(pthread_cond_timedwait(&w->txCondition,&w->txLock,&deadline))break;
+ }
+ uint32_t pending=w->txInFlight;pthread_mutex_unlock(&w->txLock);
+ return pending?0xe00002d6:0;
+}
+static void wifi_tx_complete(void *context,IOReturn result,void *arg0){
+ WifiTxRequest *request=context;Wifi *w=request->wifi;
+ uint32_t actual=(uint32_t)(uintptr_t)arg0;
+ pthread_mutex_lock(&w->txLock);
+ if(w->txInFlight)w->txInFlight--;
+ w->txCompleted++;
+ if(result||actual!=request->length){
+  w->txErrors++;w->txLastError=result?(uint32_t)result:0xe00002c2;
+ }else w->txBytes+=actual;
+ pthread_cond_broadcast(&w->txCondition);
+ pthread_mutex_unlock(&w->txLock);
+ free(request);
+}
+static void *wifi_tx_run_loop(void *context){
+ Wifi *w=context;CFRunLoopRef loop=CFRunLoopGetCurrent();CFRetain(loop);
+ CFRunLoopAddSource(loop,w->txSource,kCFRunLoopDefaultMode);
+ pthread_mutex_lock(&w->txLock);w->txRunLoop=loop;w->txThreadReady=1;
+ pthread_cond_broadcast(&w->txCondition);pthread_mutex_unlock(&w->txLock);
+ for(;;){
+  pthread_mutex_lock(&w->txLock);int stop=w->txStopping;pthread_mutex_unlock(&w->txLock);
+  if(stop)break;
+  CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.25,false);
+ }
+ CFRunLoopRemoveSource(loop,w->txSource,kCFRunLoopDefaultMode);
+ pthread_mutex_lock(&w->txLock);w->txRunLoop=NULL;pthread_mutex_unlock(&w->txLock);
+ CFRelease(loop);return NULL;
+}
+static void wifi_start_async_tx(Wifi *w){
+ if(!w||!w->usb||!w->txSyncReady)return;
+ if((*w->usb)->CreateInterfaceAsyncEventSource(w->usb,&w->txSource))return;
+ if(pthread_create(&w->txThread,NULL,wifi_tx_run_loop,w)){
+  CFRelease(w->txSource);w->txSource=NULL;return;
+ }
+ w->txThreadStarted=1;
+ pthread_mutex_lock(&w->txLock);
+ while(!w->txThreadReady)pthread_cond_wait(&w->txCondition,&w->txLock);
+ pthread_mutex_unlock(&w->txLock);
+}
+void wifi_close(Wifi *w){if(w){
+ if(w->txSyncReady){
+  if(wifi_tx_flush(w,5000)&&w->usb&&w->dataOut){
+   (*w->usb)->AbortPipe(w->usb,w->dataOut);
+   wifi_tx_flush(w,5000);
+  }
+  pthread_mutex_lock(&w->txLock);w->txStopping=1;
+  CFRunLoopRef loop=w->txRunLoop;if(loop)CFRunLoopStop(loop);
+  pthread_mutex_unlock(&w->txLock);
+  if(w->txThreadStarted)pthread_join(w->txThread,NULL);
+  if(w->txSource)CFRelease(w->txSource);
+ }
+ if(w->usb){(*w->usb)->USBInterfaceClose(w->usb);(*w->usb)->Release(w->usb);}
+ if(w->txSyncReady){pthread_cond_destroy(&w->txCondition);pthread_mutex_destroy(&w->txLock);}
+ free(w);
+}}
 Wifi *wifi_open(uint32_t *error){
  io_iterator_t it=0;io_service_t s;Wifi *w=NULL;*error=0xe00002c0;
  IOReturn r=IOServiceGetMatchingServices(kIOMainPortDefault,IOServiceMatching("IOUSBHostInterface"),&it);if(r){*error=r;return NULL;}
@@ -23,6 +113,9 @@ Wifi *wifi_open(uint32_t *error){
   IOCFPlugInInterface **plugin=NULL;SInt32 score=0;r=IOCreatePlugInInterfaceForService(s,kIOUSBInterfaceUserClientTypeID,kIOCFPlugInInterfaceID,&plugin,&score);IOObjectRelease(s);
   if(r||!plugin){*error=r?r:0xe00002bc;break;}
   w=calloc(1,sizeof(*w));if(!w){IODestroyPlugInInterface(plugin);*error=0xe00002bd;break;}w->location=location;w->registryID=registryID;
+  if(pthread_mutex_init(&w->txLock,NULL)){IODestroyPlugInInterface(plugin);free(w);w=NULL;*error=0xe00002bd;break;}
+  if(pthread_cond_init(&w->txCondition,NULL)){pthread_mutex_destroy(&w->txLock);IODestroyPlugInInterface(plugin);free(w);w=NULL;*error=0xe00002bd;break;}
+  w->txSyncReady=1;
   HRESULT h=(*plugin)->QueryInterface(plugin,CFUUIDGetUUIDBytes(kIOUSBInterfaceInterfaceID300),(LPVOID*)&w->usb);IODestroyPlugInInterface(plugin);
   if(h||!w->usb){*error=(uint32_t)h;wifi_close(w);w=NULL;break;}
   r=(*w->usb)->USBInterfaceOpen(w->usb);
@@ -34,7 +127,7 @@ Wifi *wifi_open(uint32_t *error){
    if(direction==kUSBIn){if(!ins++)w->dataIn=p;else w->msgIn=p;}
    else {if(!outs++)w->dataOut=p;else w->msgOut=p;}
   }
-  if(ins!=2||outs!=2||!w->msgIn||!w->msgOut){*error=0xe00002bc;wifi_close(w);w=NULL;}else *error=0;
+  if(ins!=2||outs!=2||!w->msgIn||!w->msgOut){*error=0xe00002bc;wifi_close(w);w=NULL;}else {*error=0;wifi_start_async_tx(w);}
   break;
  }IOObjectRelease(it);return w;
 }
@@ -136,6 +229,66 @@ uint32_t wifi_write_data(Wifi *w,const void *data,uint32_t length){
  if(status)return status;
  return (*w->usb)->WritePipeTO(w->usb,w->dataOut,(void *)data,length,1000,2000);
 }
+uint32_t wifi_validate_data_batch(const void *data,uint32_t length){
+ if(!data||length<36||length>15364)return 0xe00002c2;
+ const uint8_t *p=data;uint32_t offset=0,count=0;
+ while(offset<length){
+  uint32_t remaining=length-offset;
+  if(remaining==4&&!p[offset]&&!p[offset+1]&&!p[offset+2]&&!p[offset+3])
+   return count?0:0xe00002c2;
+  if(remaining<36||count==10)return 0xe00002c2;
+  uint32_t first=p[offset]|((uint32_t)p[offset+1]<<8);
+  uint32_t second=p[offset+2]|((uint32_t)p[offset+3]<<8);
+  if(first!=second||first>remaining-4||wifi_validate_data_frame(p+offset+4,first))
+   return 0xe00002c2;
+  uint32_t end=offset+4+first,aligned=(end+3)&~3U;
+  if(aligned>length)return 0xe00002c2;
+  for(uint32_t i=end;i<aligned;i++)if(p[i])return 0xe00002c2;
+  offset=aligned;count++;
+ }
+ return count?0:0xe00002c2;
+}
+static uint32_t wifi_submit_data_async(Wifi *w,const void *data,uint32_t length){
+ uint32_t status;
+ if(!w->txThreadStarted)return (*w->usb)->WritePipeTO(w->usb,w->dataOut,(void *)data,length,1000,2000);
+ WifiTxRequest *request=malloc(sizeof(*request)+length);if(!request)return 0xe00002bd;
+ request->wifi=w;request->length=length;memcpy(request->data,data,length);
+ pthread_mutex_lock(&w->txLock);
+ while(w->txInFlight>=WIFI_TX_ASYNC_DEPTH&&!w->txStopping)
+  pthread_cond_wait(&w->txCondition,&w->txLock);
+ if(w->txStopping){pthread_mutex_unlock(&w->txLock);free(request);return 0xe00002d6;}
+ w->txInFlight++;w->txSubmitted++;
+ if(w->txInFlight>w->txHighWater)w->txHighWater=w->txInFlight;
+ pthread_mutex_unlock(&w->txLock);
+ status=(*w->usb)->WritePipeAsyncTO(w->usb,w->dataOut,request->data,length,
+                                    1000,2000,wifi_tx_complete,request);
+ if(status){
+  pthread_mutex_lock(&w->txLock);if(w->txInFlight)w->txInFlight--;
+  w->txErrors++;w->txLastError=status;pthread_cond_broadcast(&w->txCondition);
+  pthread_mutex_unlock(&w->txLock);free(request);
+ }
+ return status;
+}
+uint32_t wifi_write_data_async(Wifi *w,const void *data,uint32_t length){
+ if(!w)return 0xe00002c2;
+ uint32_t status=wifi_validate_data_frame(data,length);if(status)return status;
+ return wifi_submit_data_async(w,data,length);
+}
+uint32_t wifi_write_data_batch_async(Wifi *w,const void *data,uint32_t length){
+ if(!w)return 0xe00002c2;
+ uint32_t status=wifi_validate_data_batch(data,length);if(status)return status;
+ return wifi_submit_data_async(w,data,length);
+}
+uint32_t wifi_tx_snapshot(Wifi *w,uint64_t *submitted,uint64_t *completed,
+                          uint64_t *bytes,uint64_t *errors,uint32_t *inFlight,
+                          uint32_t *highWater,uint32_t *lastError){
+ if(!w||!submitted||!completed||!bytes||!errors||!inFlight||!highWater||!lastError)return 0xe00002c2;
+ pthread_mutex_lock(&w->txLock);*submitted=w->txSubmitted;*completed=w->txCompleted;
+ *bytes=w->txBytes;*errors=w->txErrors;*inFlight=w->txInFlight;
+ *highWater=w->txHighWater;*lastError=w->txLastError;pthread_mutex_unlock(&w->txLock);
+ return 0;
+}
+uint32_t wifi_flush_data_writes(Wifi *w,uint32_t timeoutMs){return wifi_tx_flush(w,timeoutMs);}
 int wifi_unwrap(const uint8_t *key,const uint8_t *data,size_t size,uint8_t *output,size_t *outputSize){
  if(!key||!data||!output||!outputSize||size<24||size>2048||size%8)return -1;
  return CCSymmetricKeyUnwrap(kCCWRAPAES,CCrfc3394_iv,CCrfc3394_ivLen,key,16,data,size,output,outputSize);

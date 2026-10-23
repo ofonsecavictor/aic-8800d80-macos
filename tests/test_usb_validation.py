@@ -8,7 +8,7 @@ import unittest
 from management import transmit_action_frame
 from layouts import me_channel_config_request, me_config_request
 from protocol import command
-from wpa2 import transmit_frame
+from wpa2 import aggregate_transmit_frames, transmit_frame
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'AIC IOKit transport is macOS-only')
@@ -25,6 +25,8 @@ class USBValidationTests(unittest.TestCase):
         cls.lib = ctypes.CDLL(str(library))
         cls.lib.wifi_validate_data_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         cls.lib.wifi_validate_data_frame.restype = ctypes.c_uint32
+        cls.lib.wifi_validate_data_batch.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        cls.lib.wifi_validate_data_batch.restype = ctypes.c_uint32
         cls.lib.wifi_validate_command_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         cls.lib.wifi_validate_command_frame.restype = ctypes.c_uint32
 
@@ -37,6 +39,10 @@ class USBValidationTests(unittest.TestCase):
 
     def valid_command(self, frame):
         return self.lib.wifi_validate_command_frame(
+            ctypes.create_string_buffer(frame), len(frame)) == 0
+
+    def valid_batch(self, frame):
+        return self.lib.wifi_validate_data_batch(
             ctypes.create_string_buffer(frame), len(frame)) == 0
 
     def test_accepts_only_exact_me_config_frame(self):
@@ -74,6 +80,30 @@ class USBValidationTests(unittest.TestCase):
                 self.assertEqual(len(packet) % 512, 1)
                 self.assertEqual(packet[-1], 0)
                 self.assertTrue(self.valid(packet))
+
+    def test_accepts_reference_usb_tx_aggregate_and_rejects_corruption(self):
+        header = bytes.fromhex('00112233445566778899aabb0800')
+        frames = tuple(transmit_frame(header + bytes((index,)) * (50 + index), 0, 0)
+                       for index in range(10))
+        aggregate = aggregate_transmit_frames(frames)
+        self.assertTrue(self.valid_batch(aggregate))
+        self.assertEqual(aggregate[:4], aggregate[4:6] * 2)
+        changed = bytearray(aggregate)
+        changed[2] ^= 1
+        self.assertFalse(self.valid_batch(bytes(changed)))
+
+    def test_aggregate_is_bounded_and_terminates_exact_usb_boundary(self):
+        header = bytes.fromhex('00112233445566778899aabb0800')
+        with self.assertRaises(ValueError):
+            aggregate_transmit_frames(())
+        with self.assertRaises(ValueError):
+            aggregate_transmit_frames((transmit_frame(header, 0, 0),) * 11)
+        # A 490-byte Ethernet frame produces a 512-byte aggregate record.
+        aggregate = aggregate_transmit_frames(
+            (transmit_frame(header + bytes(476), 0, 0),))
+        self.assertEqual(len(aggregate), 516)
+        self.assertEqual(aggregate[-4:], bytes(4))
+        self.assertTrue(self.valid_batch(aggregate))
 
     def test_rejects_malformed_management_descriptor(self):
         source = bytes.fromhex('021122334455')

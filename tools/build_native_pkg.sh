@@ -57,7 +57,7 @@ native="$stage/payload/Library/Application Support/AIC88M80Driver/NativeMode"
 /bin/chmod 755 "$stage/payload/Applications/Voltar ao AIC.command"
 /bin/cp "$repo_dir/installer/LEIA-ME-VELOCIDADE.txt" "$stage/resources/LEIA-ME-VELOCIDADE.txt"
 /usr/bin/pkgbuild --root "$stage/payload" --scripts "$stage/scripts" \
-    --identifier local.victor.AIC8800D80.Native --version 1.3.4 \
+    --identifier local.victor.AIC8800D80.Native --version 1.3.5 \
     --install-location / "$stage/AIC8800D80-native-speed-component.pkg"
 /usr/bin/productbuild --distribution "$repo_dir/installer/speed-Distribution.xml" \
     --resources "$stage/resources" --package-path "$stage" "$output"
