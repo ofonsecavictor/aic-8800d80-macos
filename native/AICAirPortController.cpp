@@ -468,6 +468,12 @@ SInt32 AICAirPortController::enableVirtualInterface(
     if (!interface || interface->getProperty("AICNativeAWDL") != kOSBooleanTrue)
         return kIOReturnUnsupported;
     if (!stateLock) return kIOReturnNotReady;
+    if (!interface->getController()) {
+        interface->setProperty("AICNativeAWDLLifecycleReady", kOSBooleanFalse);
+        setProperty("AICNativeAWDLActivationDeferred", kOSBooleanTrue);
+        return kIOReturnNotReady;
+    }
+    interface->setProperty("AICNativeAWDLLifecycleReady", kOSBooleanTrue);
     IOLockLock(stateLock);
     const bool ready = stateReady && radioState.powered;
     const uint32_t channel = radioState.channel ? radioState.channel : 6;
@@ -507,18 +513,24 @@ SInt32 AICAirPortController::disableVirtualInterface(
     const bool owned = awdlInterface == interface;
     IOLockUnlock(stateLock);
     if (!owned) return kIOReturnNotReady;
-    const SInt32 status = IO80211Controller::disableVirtualInterface(interface);
-    if (status != kIOReturnSuccess) return status;
+    const bool lifecycleReady = interface->getController() != nullptr;
+    if (lifecycleReady) {
+        const SInt32 status =
+            IO80211Controller::disableVirtualInterface(interface);
+        if (status != kIOReturnSuccess) return status;
+    }
     IOLockLock(stateLock);
     const bool published = awdlInterface == interface &&
         awdlMailbox.publish(awdlMac, false, awdlChannel);
     if (published) awdlEnabled = false;
     IOLockUnlock(stateLock);
     if (!published) return kIOReturnNotReady;
-    AICVirtualInterfaceSetLinkState(interface, kIO80211NetworkLinkDown, 0);
-    AICVirtualInterfaceSetEnabled(interface, false);
-    AICVirtualInterfacePostMessage(
-        interface, APPLE80211_M_LINK_CHANGED, nullptr, 0, true);
+    if (lifecycleReady) {
+        AICVirtualInterfaceSetLinkState(interface, kIO80211NetworkLinkDown, 0);
+        AICVirtualInterfaceSetEnabled(interface, false);
+        AICVirtualInterfacePostMessage(
+            interface, APPLE80211_M_LINK_CHANGED, nullptr, 0, true);
+    }
     interface->setProperty("AICNativeAWDLActive", kOSBooleanFalse);
     setProperty("AICNativeAWDLActive", kOSBooleanFalse);
     IOLog("AICNative: AWDL virtual interface disabled\n");
@@ -653,17 +665,25 @@ IOReturn AICAirPortController::createAWDLInterface(
     IOLockUnlock(stateLock);
     if (orphan) orphan->release();
 
-    SInt32 enableStatus = kIOReturnSuccess;
+    const bool lifecycleReady = attached && attached->getController();
+    if (attached) attached->setProperty(
+        "AICNativeAWDLLifecycleReady",
+        lifecycleReady ? kOSBooleanTrue : kOSBooleanFalse);
+    SInt32 enableStatus = kIOReturnNotReady;
     const bool activate = AICShouldActivateAttachedAWDL(
-        automatic, attachedSuccessfully, attached != nullptr, owned);
+        automatic, attachedSuccessfully, attached != nullptr, owned,
+        lifecycleReady);
     if (activate) {
         setProperty("AICNativeAWDLAutoEnableAttempted", kOSBooleanTrue);
         enableStatus = enableVirtualInterface(attached);
         setProperty("AICNativeAWDLAutoEnableStatus",
                     static_cast<uint32_t>(enableStatus), 32);
     }
-    const IOReturn result = owned && (!activate ||
-        enableStatus == kIOReturnSuccess) ? kIOReturnSuccess : kIOReturnError;
+    if (automatic && owned && !lifecycleReady)
+        setProperty("AICNativeAWDLActivationDeferred", kOSBooleanTrue);
+    const IOReturn result = !owned ? kIOReturnError :
+        (!automatic ? kIOReturnSuccess :
+         (!lifecycleReady ? kIOReturnNotReady : enableStatus));
     setProperty("AICNativeAWDLCreateStatus",
                 static_cast<uint32_t>(result), 32);
     if (automatic)
@@ -985,15 +1005,44 @@ void AICAirPortController::awdlTimerFired(
     auto *self = OSDynamicCast(AICAirPortController, owner);
     if (!self || sender != self->awdlTimer || !self->nativeStarted ||
         !self->bsdInterface || !self->bsdInterface->getIfnet()) return;
+    IO80211VirtualInterface *existing = nullptr;
+    bool alreadyEnabled = false;
     if (self->stateLock) {
         IOLockLock(self->stateLock);
-        const bool alreadyCreated = self->awdlInterface != nullptr;
+        existing = self->awdlInterface;
+        alreadyEnabled = self->awdlEnabled;
+        if (existing) existing->retain();
         IOLockUnlock(self->stateLock);
-        if (alreadyCreated) return;
+    }
+    if (alreadyEnabled) {
+        if (existing) existing->release();
+        return;
     }
     ++self->awdlAutocreateAttempts;
     self->setProperty("AICNativeAWDLAutocreateAttempts",
                       self->awdlAutocreateAttempts, 32);
+    if (existing) {
+        IOReturn result = kIOReturnNotReady;
+        const bool lifecycleReady = existing->getController() != nullptr;
+        existing->setProperty(
+            "AICNativeAWDLLifecycleReady",
+            lifecycleReady ? kOSBooleanTrue : kOSBooleanFalse);
+        if (lifecycleReady) result = self->enableVirtualInterface(existing);
+        self->setProperty("AICNativeAWDLAutocreateStatus",
+                          static_cast<uint32_t>(result), 32);
+        existing->release();
+        if (result == kIOReturnSuccess) {
+            self->setProperty("AICNativeAWDLAutocreateComplete",
+                              kOSBooleanTrue);
+            return;
+        }
+        if (self->awdlAutocreateAttempts < 5) {
+            sender->setTimeoutMS(1000);
+        } else {
+            IOLog("AICNative: AWDL lifecycle never became ready; primary Wi-Fi remains available\n");
+        }
+        return;
+    }
     IOEthernetAddress stationAddress = {};
     uint8_t awdlAddress[6] = {};
     IOReturn result = kIOReturnBadArgument;
@@ -1498,7 +1547,7 @@ IOReturn AICAirPortController::getDRIVER_VERSION(
     IO80211SkywalkInterface *, apple80211_version_data *data) {
     if (!data) return kIOReturnBadArgument;
     static const char driverVersion[] =
-        "AIC 8800D80 native 0.0.24-bidirectional.1";
+        "AIC 8800D80 native 0.0.25-panicfix.1";
     static_assert(sizeof(driverVersion) <= sizeof(data->string), "driver version too long");
     bzero(data, sizeof(*data));
     data->version = APPLE80211_VERSION;
@@ -1736,6 +1785,10 @@ IOReturn AICAirPortController::submitReceivedFrame(
     if (!target) return kIOReturnNotReady;
     // IO80211 copies the bounded action payload while posting the synchronous
     // message; peer data is never persisted by the driver.
+    if (!target->getController()) {
+        target->release();
+        return kIOReturnNotReady;
+    }
     AICVirtualInterfacePostMessage(target, APPLE80211_M_ACTION_FRAME,
                                    const_cast<uint8_t *>(frame.data),
                                    frame.length, true);
@@ -2196,4 +2249,4 @@ extern "C" {
 kmod_start_func_t *_realmain = nullptr;
 kmod_stop_func_t *_antimain = nullptr;
 }
-KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.24", _start, _stop)
+KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.25", _start, _stop)

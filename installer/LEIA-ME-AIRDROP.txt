@@ -1,26 +1,26 @@
-AIC 8800D80 — Wi-Fi nativo e AirDrop 1.4.1 Preview
+AIC 8800D80 — Wi-Fi nativo e AirDrop 1.4.2 Panic Fix Preview
 
-Este instalador completo instala do zero ou atualiza o driver nativo 0.0.24,
+Este instalador completo instala do zero ou atualiza o driver nativo 0.0.25,
 o firmware, o carregador USB, o serviço Wi-Fi, a integração CoreWLAN, o app de
-recuperação e o rollback. A versão 0.0.24 preserva as correções de ABI e
-vtable da 0.0.23 e ativa a interface AWDL criada pelo fallback nativo. A 0.0.23
-registrava o serviço AirLink, mas o deixava sem nome BSD, desligado e sem
-interface awdl0; isso impedia que o iPhone iniciasse uma transferência para o
-Mac. A ativação nova ocorre somente depois que a interface foi criada,
-anexada e adotada pelo controlador.
+recuperação e o rollback. A versão 0.0.25 corrige o kernel panic reproduzido
+na 0.0.24 quando o fallback AWDL chamava
+IO80211VirtualInterface::postMessage antes de o ciclo de vida Skywalk preencher
+getController(). A ativação agora fica bloqueada enquanto esse ponteiro estiver
+nulo e é tentada novamente de forma limitada. Se ele nunca ficar pronto, o
+driver abandona AWDL sem interromper o Wi-Fi principal.
 
 Em uma instalação limpa, o pacote configura todos os componentes e adiciona o
 kext à EFI OpenCore usada no boot. Ele também atualiza instalações 0.0.15 a
-0.0.23 e verifica uma instalação 0.0.24 existente. Antes de alterar a EFI,
+0.0.24 e verifica uma instalação 0.0.25 existente. Antes de alterar a EFI,
 exige um pendrive USB montado e bootável com OpenCore, cria backup transacional
 e preserva a configuração anterior. O aplicativo Voltar ao AIC continua sendo
 o caminho de rollback. Se o AWDL não puder ser ativado, o Wi-Fi principal
 permanece disponível e o driver publica o status da falha para diagnóstico.
 
-Validação herdada da v1.4.0 no Hackintosh alvo: reinicialização sem novo
-kernel panic, Wi-Fi nativo preservado e transferência real do Mac para um
-iPhone concluída via AirDrop. A correção de recepção desta preview passou nos
-testes locais e de compilação, mas ainda exige reinicialização e teste real
-iPhone para Mac. O pacote não é assinado nem notarizado e continua específico
+O panic 0.0.24 foi confirmado em duas inicializações reais dentro de
+IO80211VirtualInterface::postMessage e essa versão foi retirada. A correção
+0.0.25 deve passar pelos testes locais, validação de kext e auditoria do pacote
+antes de qualquer instalação. Reinicialização real e AirDrop iPhone para Mac
+continuam pendentes. O pacote não é assinado nem notarizado e é específico
 para Hackintosh Intel, macOS 15/Darwin 24 e dongle AIC 8800D80
 a69c:8d80/8d81.

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="1">
-  <title>AIC 8800D80 — Wi-Fi nativo e AirDrop 1.4.1 Preview</title>
+  <title>AIC 8800D80 — Wi-Fi nativo e AirDrop 1.4.2 Panic Fix Preview</title>
   <readme file="LEIA-ME-AIRDROP.txt"/>
   <organization>local.victor</organization>
   <domains enable_localSystem="true" enable_anywhere="false" enable_currentUserHome="false"/>
@@ -19,5 +19,5 @@
   <choices-outline><line choice="default"><line choice="native"/></line></choices-outline>
   <choice id="default"/>
   <choice id="native" visible="false"><pkg-ref id="local.victor.AIC8800D80.Native"/></choice>
-  <pkg-ref id="local.victor.AIC8800D80.Native" version="1.4.1" onConclusion="RequireRestart">AIC8800D80-native-airdrop-component.pkg</pkg-ref>
+  <pkg-ref id="local.victor.AIC8800D80.Native" version="1.4.2" onConclusion="RequireRestart">AIC8800D80-native-airdrop-component.pkg</pkg-ref>
 </installer-gui-script>

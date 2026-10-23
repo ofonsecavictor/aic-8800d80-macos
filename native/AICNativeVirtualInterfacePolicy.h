@@ -72,13 +72,15 @@ inline bool AICValidAWDLCreateRequest(uint32_t requestVersion, uint32_t role,
            AICValidAWDLInterfaceName(name, nameLength);
 }
 
-// A WCL-originated interface is enabled later by macOS.  The delayed fallback
-// has no such caller, so leaving it merely attached publishes an AirLink
-// IOService without creating a usable awdl0 interface.
+// IO80211VirtualInterface::postMessage dereferences getController().  A
+// freshly registered fallback can exist before the Skywalk lifecycle has
+// populated that controller pointer, so activation must be deferred until it
+// is present.  This is a hard panic-prevention gate, not only a state hint.
 inline bool AICShouldActivateAttachedAWDL(bool automatic,
                                           bool attachedSuccessfully,
                                           bool returnedInterface,
-                                          bool controllerOwnsInterface) {
+                                          bool controllerOwnsInterface,
+                                          bool lifecycleReady) {
     return automatic && attachedSuccessfully && returnedInterface &&
-           controllerOwnsInterface;
+           controllerOwnsInterface && lifecycleReady;
 }

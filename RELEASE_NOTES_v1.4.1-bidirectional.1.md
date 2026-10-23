@@ -1,5 +1,9 @@
 # AIC 8800D80 nativo 1.4.1-bidirectional.1
 
+> **RETIRADA — NÃO INSTALE.** O driver 0.0.24 causou kernel panic
+> reproduzível em `IO80211VirtualInterface::postMessage` em duas
+> inicializações reais. A release foi ocultada em 23 de outubro de 2026.
+
 Esta é uma **prévia de validação** do recebimento por AirDrop no Hackintosh
 Intel. Ela mantém o Wi-Fi nativo e o envio Mac para iPhone da v1.4.0 e corrige
 o primeiro bloqueio confirmado no sentido iPhone para Mac: o serviço AirLink

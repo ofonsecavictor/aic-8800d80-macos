@@ -20,7 +20,7 @@ from native_release import (BUNDLE_ID, PROFILE, RECORD, SUPPORT, VERSION,
 
 PREVIOUS_VERSIONS = (
     '0.0.15', '0.0.16', '0.0.17', '0.0.18', '0.0.19',
-    '0.0.20', '0.0.21', '0.0.22', '0.0.23',
+    '0.0.20', '0.0.21', '0.0.22', '0.0.23', '0.0.24',
 )
 
 
@@ -47,7 +47,7 @@ def upgrade(candidate):
     original_record = dict(record)
     if previous_version not in PREVIOUS_VERSIONS:
         raise RuntimeError(
-            'A atualização requer um nativo entre 0.0.15 e 0.0.23')
+            'A atualização requer um nativo entre 0.0.15 e 0.0.24')
     validate_bundle(candidate)
     device, oc, mounted_here = boot_efi()
     destination = oc / 'Kexts' / 'AICNativeProbe.kext'

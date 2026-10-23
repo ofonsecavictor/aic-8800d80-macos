@@ -1,0 +1,13 @@
+NÃO INSTALE AIC 1.4.1-bidirectional.1 / DRIVER 0.0.24
+
+O driver 0.0.24 causou kernel panic reproduzível em duas inicializações no
+Hackintosh alvo em 23 de outubro de 2026. O backtrace confirmado foi:
+
+IO80211VirtualInterface::postMessage
+AICAirPortController::enableVirtualInterface
+AICAirPortController::createAWDLInterface
+AICAirPortController::awdlTimerFired
+
+Causa: a ativação automática chamava postMessage enquanto getController()
+ainda era nulo. A release foi ocultada no GitHub. Use a v1.4.0/driver 0.0.23
+ou o caminho de recuperação até que a correção 0.0.25 seja validada em boot.
