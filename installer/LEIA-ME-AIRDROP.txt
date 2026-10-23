@@ -1,29 +1,26 @@
-AIC 8800D80 — Wi-Fi nativo e AirDrop 1.4.0
+AIC 8800D80 — Wi-Fi nativo e AirDrop 1.4.1 Preview
 
-Este instalador completo instala do zero ou atualiza o driver nativo 0.0.23,
+Este instalador completo instala do zero ou atualiza o driver nativo 0.0.24,
 o firmware, o carregador USB, o serviço Wi-Fi, a integração CoreWLAN, o app de
-recuperação e o rollback. Ele cria de forma controlada a interface AirLink
-exigida pelo AirDrop com iPhone. A versão corrige a fábrica da
-interface virtual para o ABI Skywalk real do macOS 15: a classe-base da Apple
-é abstrata e agora o AIC fornece a subclasse concreta exigida pelo sistema. A
-versão 0.0.23 também corrige todo o vtable herdado, incluindo start, stop,
-attach, detach e terminate; a inconsistência anterior deixou o estado de
-desmontagem nulo e causou o panic da versão 0.0.22.
-As cinco tentativas continuam ocorrendo apenas depois que o Wi-Fi principal
-termina de registrar.
+recuperação e o rollback. A versão 0.0.24 preserva as correções de ABI e
+vtable da 0.0.23 e ativa a interface AWDL criada pelo fallback nativo. A 0.0.23
+registrava o serviço AirLink, mas o deixava sem nome BSD, desligado e sem
+interface awdl0; isso impedia que o iPhone iniciasse uma transferência para o
+Mac. A ativação nova ocorre somente depois que a interface foi criada,
+anexada e adotada pelo controlador.
 
 Em uma instalação limpa, o pacote configura todos os componentes e adiciona o
 kext à EFI OpenCore usada no boot. Ele também atualiza instalações 0.0.15 a
-0.0.22 e verifica uma instalação 0.0.23 existente. Antes de alterar a EFI,
+0.0.23 e verifica uma instalação 0.0.24 existente. Antes de alterar a EFI,
 exige um pendrive USB montado e bootável com OpenCore, cria backup transacional
 e preserva a configuração anterior. O aplicativo Voltar ao AIC continua sendo
-o caminho de rollback. Se o AWDL não
-puder ser criado, o Wi-Fi principal permanece disponível e o driver publica
-o status da falha para diagnóstico.
+o caminho de rollback. Se o AWDL não puder ser ativado, o Wi-Fi principal
+permanece disponível e o driver publica o status da falha para diagnóstico.
 
-Validação realizada no Hackintosh alvo: reinicialização sem novo kernel panic,
-Wi-Fi nativo preservado e transferência real do Mac para um iPhone concluída
-via AirDrop. A transferência no sentido iPhone para Mac ainda não funciona
-nesta versão. O pacote não é assinado nem notarizado e continua específico
+Validação herdada da v1.4.0 no Hackintosh alvo: reinicialização sem novo
+kernel panic, Wi-Fi nativo preservado e transferência real do Mac para um
+iPhone concluída via AirDrop. A correção de recepção desta preview passou nos
+testes locais e de compilação, mas ainda exige reinicialização e teste real
+iPhone para Mac. O pacote não é assinado nem notarizado e continua específico
 para Hackintosh Intel, macOS 15/Darwin 24 e dongle AIC 8800D80
 a69c:8d80/8d81.

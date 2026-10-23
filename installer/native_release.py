@@ -21,7 +21,7 @@ import time
 SUPPORT = Path('/Library/Application Support/AIC88M80Driver')
 KEXT_NAME = 'AICNativeProbe.kext'
 BUNDLE_ID = 'local.victor.AICNativeProbe'
-VERSION = '0.0.23'
+VERSION = '0.0.24'
 RECORD = SUPPORT / 'native-release.json'
 PROFILE = SUPPORT / 'wifi/profile.json'
 VOLUMES = Path('/Volumes')

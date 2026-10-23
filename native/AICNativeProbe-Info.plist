@@ -15,9 +15,9 @@
     <key>CFBundlePackageType</key>
     <string>KEXT</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.0.1</string>
+    <string>0.0.24</string>
     <key>CFBundleVersion</key>
-    <string>0.0.1</string>
+    <string>0.0.24</string>
     <key>IOKitPersonalities</key>
     <dict>
         <key>Disabled Native Probe</key>

@@ -492,6 +492,8 @@ SInt32 AICAirPortController::enableVirtualInterface(
     AICVirtualInterfaceSetLinkState(interface, kIO80211NetworkLinkUp, 0);
     AICVirtualInterfacePostMessage(
         interface, APPLE80211_M_LINK_CHANGED, nullptr, 0, true);
+    interface->setProperty("AICNativeAWDLActive", kOSBooleanTrue);
+    setProperty("AICNativeAWDLActive", kOSBooleanTrue);
     IOLog("AICNative: AWDL virtual interface enabled\n");
     return kIOReturnSuccess;
 }
@@ -517,6 +519,8 @@ SInt32 AICAirPortController::disableVirtualInterface(
     AICVirtualInterfaceSetEnabled(interface, false);
     AICVirtualInterfacePostMessage(
         interface, APPLE80211_M_LINK_CHANGED, nullptr, 0, true);
+    interface->setProperty("AICNativeAWDLActive", kOSBooleanFalse);
+    setProperty("AICNativeAWDLActive", kOSBooleanFalse);
     IOLog("AICNative: AWDL virtual interface disabled\n");
     return kIOReturnSuccess;
 }
@@ -649,17 +653,31 @@ IOReturn AICAirPortController::createAWDLInterface(
     IOLockUnlock(stateLock);
     if (orphan) orphan->release();
 
-    const IOReturn result = owned ? kIOReturnSuccess : kIOReturnError;
+    SInt32 enableStatus = kIOReturnSuccess;
+    const bool activate = AICShouldActivateAttachedAWDL(
+        automatic, attachedSuccessfully, attached != nullptr, owned);
+    if (activate) {
+        setProperty("AICNativeAWDLAutoEnableAttempted", kOSBooleanTrue);
+        enableStatus = enableVirtualInterface(attached);
+        setProperty("AICNativeAWDLAutoEnableStatus",
+                    static_cast<uint32_t>(enableStatus), 32);
+    }
+    const IOReturn result = owned && (!activate ||
+        enableStatus == kIOReturnSuccess) ? kIOReturnSuccess : kIOReturnError;
     setProperty("AICNativeAWDLCreateStatus",
                 static_cast<uint32_t>(result), 32);
     if (automatic)
         setProperty("AICNativeAWDLAutocreateStatus",
                     static_cast<uint32_t>(result), 32);
-    if (owned) {
+    if (owned && result == kIOReturnSuccess) {
         setProperty("AICNativeAWDLCreateStage", 5, 32);
-        IOLog("AICNative: attached WCL AWDL virtual interface\n");
+        IOLog(activate
+            ? "AICNative: attached and enabled fallback AWDL virtual interface\n"
+            : "AICNative: attached WCL AWDL virtual interface\n");
     } else {
-        IOLog("AICNative: failed to attach WCL AWDL virtual interface\n");
+        IOLog(owned
+            ? "AICNative: attached fallback AWDL interface but enable failed\n"
+            : "AICNative: failed to attach WCL AWDL virtual interface\n");
     }
     return result;
 }
@@ -1479,7 +1497,8 @@ SInt32 AICAirPortController::handleCardSpecific(
 IOReturn AICAirPortController::getDRIVER_VERSION(
     IO80211SkywalkInterface *, apple80211_version_data *data) {
     if (!data) return kIOReturnBadArgument;
-    static const char driverVersion[] = "AIC 8800D80 native 0.0.23-airdrop.6";
+    static const char driverVersion[] =
+        "AIC 8800D80 native 0.0.24-bidirectional.1";
     static_assert(sizeof(driverVersion) <= sizeof(data->string), "driver version too long");
     bzero(data, sizeof(*data));
     data->version = APPLE80211_VERSION;
@@ -2177,4 +2196,4 @@ extern "C" {
 kmod_start_func_t *_realmain = nullptr;
 kmod_stop_func_t *_antimain = nullptr;
 }
-KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.23", _start, _stop)
+KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.24", _start, _stop)

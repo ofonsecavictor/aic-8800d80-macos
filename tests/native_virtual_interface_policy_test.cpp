@@ -56,5 +56,10 @@ int main() {
         awdl0, sizeof(awdl0)));
     assert(!AICValidAWDLCreateRequest(
         1, 5, valid, sizeof(valid), awdl0, sizeof(awdl0)));
+    assert(AICShouldActivateAttachedAWDL(true, true, true, true));
+    assert(!AICShouldActivateAttachedAWDL(false, true, true, true));
+    assert(!AICShouldActivateAttachedAWDL(true, false, true, true));
+    assert(!AICShouldActivateAttachedAWDL(true, true, false, true));
+    assert(!AICShouldActivateAttachedAWDL(true, true, true, false));
     return 0;
 }

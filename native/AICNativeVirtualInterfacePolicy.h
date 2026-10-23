@@ -71,3 +71,14 @@ inline bool AICValidAWDLCreateRequest(uint32_t requestVersion, uint32_t role,
            AICSupportsVirtualInterface(role, address, addressLength) &&
            AICValidAWDLInterfaceName(name, nameLength);
 }
+
+// A WCL-originated interface is enabled later by macOS.  The delayed fallback
+// has no such caller, so leaving it merely attached publishes an AirLink
+// IOService without creating a usable awdl0 interface.
+inline bool AICShouldActivateAttachedAWDL(bool automatic,
+                                          bool attachedSuccessfully,
+                                          bool returnedInterface,
+                                          bool controllerOwnsInterface) {
+    return automatic && attachedSuccessfully && returnedInterface &&
+           controllerOwnsInterface;
+}

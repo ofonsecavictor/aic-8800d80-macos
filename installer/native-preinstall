@@ -11,7 +11,7 @@ if [ -e '/Library/Application Support/AIC88M80Driver/native-release.json' ]; the
 import json
 from pathlib import Path
 record = json.loads(Path('/Library/Application Support/AIC88M80Driver/native-release.json').read_text())
-assert record.get('version') in ('0.0.15', '0.0.16', '0.0.17', '0.0.18', '0.0.19', '0.0.20', '0.0.21', '0.0.22', '0.0.23'), 'Versão nativa existente inesperada'
+assert record.get('version') in ('0.0.15', '0.0.16', '0.0.17', '0.0.18', '0.0.19', '0.0.20', '0.0.21', '0.0.22', '0.0.23', '0.0.24'), 'Versão nativa existente inesperada'
 PY
         echo 'A instalação nativa existente não corresponde a esta atualização.' >&2
         exit 1
