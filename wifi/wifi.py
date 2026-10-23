@@ -12,13 +12,25 @@ import subprocess
 import os
 import fcntl
 import stat
+import sys
 from collections import deque
 from protocol import command,messages
-from layouts import passive_scan,network,connect_request,channel_to_frequency,frequency_to_channel,frequency_band,connectable_frequency
+from layouts import passive_scan,network,association_diagnostics,connect_request,me_config_request,me_channel_config_request,channel_to_frequency,frequency_to_channel,frequency_band,connectable_frequency
 from reports import write_report
 from wpa2 import Supplicant,pmk,ethernet_frames,transmit_frame,key_request,parse_key,validate_rsn
 
 HERE=Path(__file__).resolve().parent
+USB_DATA_READ_DEPTH=8
+USB_DATA_QUEUE_DEPTH=2048
+USB_DATA_DRAIN_BATCH=256
+
+def start_data_readers(target,depth=USB_DATA_READ_DEPTH):
+    readers=[]
+    for index in range(depth):
+        reader=threading.Thread(target=target,name='AIC USB data RX %u'%index,
+                                daemon=True)
+        reader.start();readers.append(reader)
+    return readers
 
 class Wifi:
     def __init__(self):
@@ -46,10 +58,10 @@ class Wifi:
         lib.wifi_read_data.argtypes=lib.wifi_read.argtypes;lib.wifi_read_data.restype=ctypes.c_uint32
         lib.wifi_write_data.argtypes=lib.wifi_write.argtypes;lib.wifi_write_data.restype=ctypes.c_uint32
         error=ctypes.c_uint32();self.handle=lib.wifi_open(ctypes.byref(error))
-        if not self.handle and error.value==0xe00002c0:
+        if not self.handle and error.value in (0xe00002c0,0xe00002bc):
             print('Aguardando o serviço inicializar o AIC na porta USB...',flush=True)
             deadline=time.monotonic()+15
-            while not self.handle and error.value==0xe00002c0 and time.monotonic()<deadline:
+            while not self.handle and error.value in (0xe00002c0,0xe00002bc) and time.monotonic()<deadline:
                 time.sleep(0.5);self.handle=lib.wifi_open(ctypes.byref(error))
         if not self.handle:raise RuntimeError('Cannot open AIC Wi-Fi interface: %08x'%error.value)
         self.events=deque()
@@ -60,17 +72,31 @@ class Wifi:
         self.write_auth_report=True
         self.scan_requested=threading.Event();self.active_vif=None
         self.connected_scan=False;self.connected_scan_deadline=0;self.connected_results={}
-        self.rx_diagnostics={'records':0,'malformed':0,'ethernet_frames':0,'hardware':{},'ether_types':{}}
+        self.rx_diagnostics={'records':0,'malformed':0,'ethernet_frames':0,
+                             'queue_dropped':0,'queue_highwater':0,
+                             'hardware':{},'phy':{},'ether_types':{},
+                             'sample_header':None}
         self.tx_sequence=0;self.tx_confirmations={}
-        self.rx=queue.Queue(maxsize=128);self.control_rx=queue.Queue(maxsize=128)
+        self.tx_sample_pending=set()
+        self.tx_diagnostics={'data_submitted':0,'sample_requested':0,
+                             'sample_confirmed':0,'sample_acked':0,
+                             'sample_nacked':0}
+        # Keep several bulk-IN requests outstanding, like the Linux driver's
+        # RX URB pool.  A single synchronous ReadPipeTO request limits one
+        # Ethernet frame per USB round trip (about 18 Mbit/s on this host).
+        # Eight readers keep the USB scheduler supplied without changing the
+        # stable kernel bridge or the FullMAC protocol.
+        self.rx=queue.Queue(maxsize=USB_DATA_QUEUE_DEPTH);self.control_rx=queue.Queue(maxsize=128)
         self.stop_rx=threading.Event()
-        self.reader=threading.Thread(target=self._receive_data,daemon=True);self.reader.start()
+        self.readers=start_data_readers(self._receive_data)
         self.control_reader=threading.Thread(target=self._receive_control,daemon=True);self.control_reader.start()
         print('AIC Wi-Fi interface 2 opened at %08x'%lib.wifi_location(self.handle),flush=True)
 
     def close(self):
         if self.handle:
-            self.stop_rx.set();self.reader.join();self.control_reader.join()
+            self.stop_rx.set()
+            for reader in self.readers:reader.join()
+            self.control_reader.join()
             self.lib.wifi_close(self.handle);self.handle=None
         self.lock.close()
 
@@ -84,10 +110,14 @@ class Wifi:
             item=RuntimeError('USB data read: %08x'%status) if status else data.raw[:length.value]
             if not status and len(item)>=4 and item[2]&0x7f==0x12:
                 for _,body in messages(item):
-                    value,index=struct.unpack('<II',body);self.tx_confirmations[index]=value
+                    value,index=struct.unpack('<II',body);self.record_tx_confirmation(value,index)
                 continue
-            try:self.rx.put_nowait(item)
+            try:
+                self.rx.put_nowait(item)
+                self.rx_diagnostics['queue_highwater']=max(
+                    self.rx_diagnostics['queue_highwater'],self.rx.qsize())
             except queue.Full:
+                self.rx_diagnostics['queue_dropped']+=1
                 try:self.rx.get_nowait()
                 except queue.Empty:pass
                 self.rx.put_nowait(item)
@@ -106,7 +136,7 @@ class Wifi:
                 result=[]
                 for msg,body in messages(buffer.raw[:length.value]):
                     if msg==0x10000:
-                        value,index=struct.unpack('<II',body);self.tx_confirmations[index]=value
+                        value,index=struct.unpack('<II',body);self.record_tx_confirmation(value,index)
                     else:result.append((msg,body))
                 if not result:continue
                 item=result
@@ -158,10 +188,10 @@ class Wifi:
             self.connected_scan=False
             print('AIC: busca com enlace ativo expirou.',flush=True)
         frames=[]
-        for _ in range(32):
+        for _ in range(USB_DATA_DRAIN_BATCH):
             data=self.data_read(0)
             if not data:break
-            frames.extend(ethernet_frames(data))
+            frames.extend(self.decode_data(data))
         return frames
 
     def request(self,message_id,payload=b'',confirmation=None):
@@ -235,6 +265,12 @@ class Wifi:
             self.initialize_radio()
             if getattr(self,'radio_observer',None):self.radio_observer(True,None,self.mac)
             self.request(0)
+            # Match the upstream FullMAC start sequence.  Without ME_CONFIG the
+            # firmware associates but never learns that this D80 supports
+            # HT/VHT or an 80 MHz channel, leaving throughput near legacy rates.
+            self.request(0x1400,me_config_request(enable_he=True))
+            # Match the reference's mandatory regulatory-channel step.
+            self.request(0x1402,me_channel_config_request())
             self.request(2,bytes(64)+struct.pack('<IH2x',300,20))
             # CONFIG_COEX reference rwnx_open: BT on, coexistence NULL CTS on.
             self.request(0x65,struct.pack('<5B3x2I',1,0,1,0,0,0,0))
@@ -300,13 +336,21 @@ class Wifi:
                 self.probe(vif,target,auth_key)
             return sorted(({k:v for k,v in item.items() if not k.startswith('_')} for item in results.values()),key=lambda v:v['rssi'],reverse=True)
         finally:
+            cleanup_error=None
             if vif is not None:
                 if scanning:
                     try:self.request(0x100a)
                     except RuntimeError:pass
-                self.request(8,bytes([vif]))
-                self.request(0) # Reference rwnx_close: reset Wi-Fi MAC after last VIF.
+                for message,payload in ((8,bytes([vif])),(0,b'')):
+                    try:self.request(message,payload)
+                    except RuntimeError as error:
+                        print('AIC: falha ao limpar VIF: '+str(error),flush=True)
+                        if cleanup_error is None:cleanup_error=error
             if getattr(self,'radio_observer',None):self.radio_observer(False,None,self.mac)
+            # A USB timeout while tearing down the VIF must not conceal the
+            # join/bridge error that actually ended the native session.
+            if cleanup_error is not None and sys.exc_info()[0] is None:
+                raise cleanup_error
 
     def initialize_radio(self):
         # Linux does RF initialization on USB probe, not each interface open.
@@ -339,25 +383,75 @@ class Wifi:
                 fc=struct.unpack_from('<H',item,60)[0]
                 key='decryption_%u_upload_%u_reorder_%u_protected_%u'%((status>>2)&7,bool(flags&64),bool(flags&32),bool(fc&0x4000))
                 counters=self.rx_diagnostics['hardware'];counters[key]=counters.get(key,0)+1
-        try:decoded=list(ethernet_frames(item))
+                # Firmware 0x06090101 emits the packed rx_vector_1 used by
+                # D80: format_mod is the low nibble at offset 12 and ch_bw
+                # the following three bits.  The earlier old-vector decoder
+                # read payload-dependent bytes and reported impossible modes.
+                vector=item[12]
+                format_id=vector&15
+                format_name={0:'legacy',1:'legacy-dup',2:'ht',3:'ht-gf',
+                             4:'vht',5:'he-su',6:'he-mu',7:'he-er'}.get(
+                                 format_id,'unknown-%u'%format_id)
+                bandwidth={0:'20',1:'40',2:'80',3:'160',4:'80+80'}.get(
+                    (vector>>4)&7,'unknown')
+                key='%s-%sMHz'%(format_name,bandwidth)
+                counters=self.rx_diagnostics['phy'];counters[key]=counters.get(key,0)+1
+                if self.rx_diagnostics['sample_header'] is None:
+                    self.rx_diagnostics['sample_header']=item[:60].hex()
+        return item
+
+    def decode_data(self,data):
+        """Decode one USB transfer once and account for its Ethernet frames."""
+        if not data:return []
+        try:decoded=list(ethernet_frames(data))
         except ValueError:
             # As in the Linux reference, discard an invalid RX record rather
             # than interpreting bytes beyond its declared bounds.
-            self.rx_diagnostics['malformed']+=1;return b''
-        self.rx_diagnostics['ethernet_frames']+=len(decoded)
+            diagnostics=getattr(self,'rx_diagnostics',None)
+            if diagnostics is not None:diagnostics['malformed']+=1
+            return []
+        diagnostics=getattr(self,'rx_diagnostics',None)
+        if diagnostics is None:return decoded
+        diagnostics['ethernet_frames']+=len(decoded)
         for frame in decoded:
-            key=frame[12:14].hex();counters=self.rx_diagnostics['ether_types']
+            key=frame[12:14].hex();counters=diagnostics['ether_types']
             if key not in counters and len(counters)>=16:key='other'
             counters[key]=counters.get(key,0)+1
-        return item
+        return decoded
 
-    def data_write(self,ethernet,vif,station,label='EAPOL',quiet=False,require_confirmation=True):
+    def data_frames(self,timeout=1):
+        return self.decode_data(self.data_read(timeout))
+
+    def record_tx_confirmation(self,value,index):
+        if index in self.tx_sample_pending:
+            self.tx_sample_pending.remove(index)
+            self.tx_diagnostics['sample_confirmed']+=1
+            self.tx_diagnostics['sample_acked' if value&9==9 else 'sample_nacked']+=1
+        else:self.tx_confirmations[index]=value
+
+    def data_write(self,ethernet,vif,station,label='EAPOL',quiet=False,
+                   require_confirmation=True,sample_confirmation=False):
+        if require_confirmation and sample_confirmation:
+            raise ValueError('Cannot synchronously wait for a sampled confirmation')
         index=self.tx_sequence
-        if require_confirmation:self.tx_sequence+=1
-        frame=transmit_frame(ethernet,vif,station,(0x80000000|index) if require_confirmation else 0)
+        if require_confirmation or sample_confirmation:self.tx_sequence+=1
+        frame=transmit_frame(ethernet,vif,station,
+                             (0x80000000|index) if (require_confirmation or sample_confirmation) else 0)
+        if sample_confirmation:
+            self.tx_sample_pending.add(index)
         status=self.lib.wifi_write_data(self.handle,ctypes.create_string_buffer(frame),len(frame))
-        if status:raise RuntimeError('USB data write: %08x'%status)
-        if not require_confirmation:return True # Submitted to USB; no radio ACK claim.
+        if status:
+            self.tx_sample_pending.discard(index)
+            # Keep only non-sensitive transport metadata for the probe report.
+            self.tx_diagnostics['last_write_error']={
+                'status':'%08x'%status,'length':len(frame),
+                'exact_512_boundary':len(frame)%512==0}
+            raise RuntimeError('USB data write: %08x length=%d'%(
+                status,len(frame)))
+        if not require_confirmation:
+            self.tx_diagnostics['data_submitted']+=1
+            if sample_confirmation:self.tx_diagnostics['sample_requested']+=1
+            return True # Submitted to USB; radio status is tracked separately.
         deadline=time.monotonic()+3
         while index not in self.tx_confirmations and time.monotonic()<deadline:
             self.events.extend(self.read())
@@ -379,7 +473,7 @@ class Wifi:
             while time.monotonic()<deadline:
                 if getattr(self,'kernel_poll',None):self.kernel_poll()
                 data=pending or self.data_read();pending=None
-                for ethernet in ethernet_frames(data):
+                for ethernet in self.decode_data(data):
                     if ethernet[:6]!=self.mac or ethernet[6:12]!=ap or ethernet[12:14]!=b'\x88\x8e':continue
                     response,keys=supplicant.receive(ethernet[14:])
                     info,replay,_,_=parse_key(ethernet[14:])
@@ -421,7 +515,7 @@ class Wifi:
                                     vif,station,lease,ip_result,send,receive,eapol)
                             result['ip_test']=test_link(
                                 lambda frame:self.data_write(frame,vif,station,'dados',quiet=True),
-                                lambda:list(ethernet_frames(self.data_read())),self.mac,service_eapol,
+                                lambda:self.data_frames(),self.mac,service_eapol,
                                 on_lease=lease_callback,
                                 **({'keep_lease':True} if self.native_connect else {}))
                             if self.native_connect:
@@ -453,6 +547,10 @@ class Wifi:
         rsn=bytes.fromhex(target.get('rsn',''))
         validate_rsn(rsn)
         print('Selected network: '+json.dumps({k:v for k,v in target.items() if not k.startswith('_')},ensure_ascii=True),flush=True)
+        operation={k[1:]:v for k,v in target.items()
+                   if k in ('_ht_width_mhz','_ht_secondary','_vht_operation')}
+        if operation:
+            print('AP channel operation: '+json.dumps(operation,sort_keys=True),flush=True)
         try:
             while not self.rx.empty():self.rx.get_nowait()
             body=self.request(0x1800,connect_request(vif,bytes.fromhex(target['bssid'].replace(':','')),target['ssid'],target['frequency']))
@@ -467,12 +565,15 @@ class Wifi:
                     if msg==0x1802:
                         print('Association indication: '+body[:20].hex(),flush=True)
                         if len(body)<12 or body[:2]!=b'\x00\x00':raise RuntimeError('Association failed')
+                        diagnostics=association_diagnostics(body)
+                        if diagnostics is not None:
+                            print('Negotiated association: '+json.dumps(diagnostics,sort_keys=True),flush=True)
                         associated=True
                         station=body[10]
                     elif msg==0x1805:raise RuntimeError('Disconnected before authentication: '+body.hex())
                 if associated:
                     data=self.data_read()
-                    for eth in ethernet_frames(data):
+                    for eth in self.decode_data(data):
                         if eth[12:14]!=b'\x88\x8e':continue
                         info,replay,_,_=parse_key(eth[14:])
                         if info!=0x8a:continue
@@ -490,7 +591,13 @@ class Wifi:
                         return
             raise RuntimeError('Association/data receive timed out')
         finally:
-            self.request(0x1803,struct.pack('<HBx',3,vif))
+            primary_error=sys.exc_info()[0]
+            try:self.request(0x1803,struct.pack('<HBx',3,vif))
+            except RuntimeError as error:
+                print('AIC: falha ao encerrar associação: '+str(error),flush=True)
+                # A leave request or the actual join failure is more useful
+                # than a secondary USB timeout during VIF teardown.
+                if primary_error is None:raise
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--scan',action='store_true');p.add_argument('--probe-ssid');p.add_argument('--authenticate',action='store_true');p.add_argument('--dhcp',action='store_true');p.add_argument('--connect',action='store_true');args=p.parse_args()

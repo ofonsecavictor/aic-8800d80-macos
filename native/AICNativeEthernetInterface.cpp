@@ -25,6 +25,15 @@ IOReturn AICNativeEthernetInterface::prepareBSD(
     auto *queue = controller ? controller->getWorkQueue() : nullptr;
     if (!queue || !queue->inGate() || queue->onThread())
         return kIOReturnNotPermitted;
+    // Sequoia's IOSkywalkNetworkInterface::prepareBSDInterface reads the
+    // registration record immediately. Calling it before Skywalk owns that
+    // record causes a kernel page fault, not a recoverable error.
+    auto *native = interface->nativeInterface;
+    if (!native->mExpansionData ||
+        !native->mExpansionData->fRegistrationInfo ||
+        !native->mExpansionData2 ||
+        !native->mExpansionData2->fRegistrationInfo)
+        return kIOReturnNotReady;
     return interface->nativeInterface->prepareBSDInterface(interface->getIfnet(), 0);
 }
 

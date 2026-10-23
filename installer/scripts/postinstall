@@ -52,13 +52,11 @@ if [ "$console_uid" -ge 500 ] && [ "$console_user" != loginwindow ]; then
     fi
     if ! /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/osascript <<'APPLESCRIPT'
 tell application "System Events"
-    if not (exists login item "AIC Wi-Fi") then
-        make new login item at end with properties {name:"AIC Wi-Fi", path:"/Applications/AIC Wi-Fi.app", hidden:true}
-    end if
+    if exists login item "AIC Wi-Fi" then delete login item "AIC Wi-Fi"
 end tell
 APPLESCRIPT
     then
-        echo "Aviso: não foi possível cadastrar o item de login; o LaunchAgent permanece configurado."
+        echo "Aviso: não foi possível remover o item de login duplicado; o LaunchAgent permanece configurado."
     fi
 fi
 echo 'Instalação concluída; menu AIC iniciado na sessão atual. Reinicialização necessária para ativar as alterações da EFI.'

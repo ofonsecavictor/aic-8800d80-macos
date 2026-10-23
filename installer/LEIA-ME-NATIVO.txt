@@ -1,0 +1,9 @@
+AIC 8800D80 — Wi-Fi nativo experimental
+
+Este instalador foi preparado para o Mac de Victor com macOS 15 e o pendrive de recuperação 1401. Ele mantém o aplicativo AIC e as redes salvas. Após a instalação, reinicie para usar o menu Wi-Fi do macOS.
+
+Se a EFI ainda contém exatamente o teste temporário 0.0.15 deste projeto, o instalador o remove pela cópia original conferida antes de gravar a versão do pacote. Qualquer diferença inesperada cancela a operação.
+
+O driver ainda é experimental. Se a conexão falhar ou houver kernel panic, inicie pelo pendrive 1401 se necessário e execute “Voltar ao AIC.command” em Aplicativos. A reversão retira apenas a entrada nativa da EFI, preserva o AIC e pede um novo reinício.
+
+O pacote não tem assinatura Developer ID nem notarização Apple. Não instale em outro Mac ou sem o backup 1401 verificado.

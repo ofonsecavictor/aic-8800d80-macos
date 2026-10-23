@@ -1,11 +1,12 @@
 // Compile-only AIC IO80211Controller ABI experiment for macOS 15.
-// The packaged Info.plist has a disabled match. A separate build-only variant
-// compiles AIC_NATIVE_INTERFACE_PROBE, but it is never packaged or loaded:
+// The default temporary Info.plist has a disabled match. The experimental
+// USB-matched variant has loaded its provider, but not registered a controller:
 // CoreCapture initialization, concurrent teardown, scan/join callbacks and
 // the bidirectional data path are still unverified. The stable USB service
 // retains ownership of the dongle.
 
 #include <IO80211ControllerV2.h>
+#include <Airport/macOS15/FaultReporter.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/IOTimerEventSource.h>
@@ -17,6 +18,8 @@
 #include <libkern/c++/OSNumber.h>
 #include <libkern/c++/OSString.h>
 #include <mach/kmod.h>
+#include <net/if.h>
+#include <net/kpi_interface.h>
 #include <sys/kpi_mbuf.h>
 #include "AICNativeBridgeProtocol.h"
 #include "AICNativePowerMailbox.h"
@@ -25,10 +28,12 @@
 #include "AICNativeStartupPolicy.h"
 #include "AICNativeBridgeUserClient.h"
 #include "AICNativeEthernetInterface.h"
+#include "AICSkywalkQueueABI.h"
 #include "AICNativeScanWire.h"
 #include "AICNativeJoinMailbox.h"
 #include "AICNativeLeaveMailbox.h"
 #include "AICWCLConnectionEvent.h"
+#include "AICWCLBssCache.h"
 
 class AICNativeUSBProvider final : public IOService {
     OSDeclareDefaultStructors(AICNativeUSBProvider)
@@ -70,9 +75,11 @@ bool AICNativeUSBProvider::start(IOService *provider) {
         !IOService::start(provider)) return false;
     queue = IO80211WorkQueue::workQueue();
     if (!queue) {
+        IOLog("AICNative: provider work queue unavailable\n");
         IOService::stop(provider);
         return false;
     }
+    IOLog("AICNative: provider ready, queue=%p\n", queue);
     registerService();
     return true;
 }
@@ -124,17 +131,24 @@ public:
     IOReturn setGET_DEBUG_INFO(IO80211SkywalkInterface *interface,
                                 apple80211_debug_command *data) override;
     CCLogStream *getLogger() const override;
+    bool getLogPipes(CCPipe **logPipe, CCPipe **eventPipe,
+                     CCPipe **snapshotsPipe) override;
     CommonFaultReporter *getFaultReporterFromDriver() override;
     IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type,
                            OSDictionary *properties,
                            IOUserClient **handler) override;
     IOReturn publishRadioState(const AICNativeRadioState &state);
+    IOReturn setStationMac(const uint8_t mac[6]);
     IOReturn copyRadioState(AICNativeRadioState *state);
+    IOReturn copyAssociatedBss(void *reply, size_t capacity);
+    IOReturn copyAssociatedBeacon(void *reply, size_t capacity);
     IOReturn nextCommand(AICNativeCommand *command);
     IOReturn submitReceivedFrame(const AICNativeFrame &frame);
+    IOReturn submitReceivedFrames(const AICNativeFrameBatch &batch);
     IOReturn nextReceivedFrame(AICNativeFrame *frame);
     IOReturn queueTransmitFrame(const AICNativeFrame &frame);
     IOReturn nextTransmitFrame(AICNativeFrame *frame);
+    IOReturn nextTransmitFrames(AICNativeFrameBatch *batch);
     IOReturn beginScan(const AICWCLScanRequest &request);
     IOReturn abortScan();
     IOReturn nextScanRequest(AICNativeScanRequest *request);
@@ -152,9 +166,13 @@ public:
     UInt32 outputPacket(mbuf_t packet, void *parameter) override;
 
 private:
+    bool initCoreCapture();
+    void releaseCoreCapture();
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
     bool attachNativeInterface();
     void detachNativeInterface();
+    bool createSkywalkQueues();
+    void releaseSkywalkQueues();
     static IOReturn attachNativeGated(OSObject *owner, void *, void *, void *, void *);
     static IOReturn updateLinkGated(OSObject *owner, void *, void *, void *, void *);
     static IOReturn scanGated(OSObject *owner, void *operation,
@@ -165,21 +183,36 @@ private:
     static void joinTimerFired(OSObject *owner, IOTimerEventSource *sender);
 #endif
     IO80211WorkQueue *queue = nullptr;
+    CCPipe *logPipe = nullptr;
+    CCPipe *eventPipe = nullptr;
+    CCPipe *snapshotsPipe = nullptr;
+    CCLogStream *logger = nullptr;
+    CCStream *faultStream = nullptr;
+    CCFaultReporter *coreFaultReporter = nullptr;
+    IO80211FaultReporter *faultReporter = nullptr;
+    bool logPipeStarted = false;
+    bool eventPipeStarted = false;
+    bool snapshotsPipeStarted = false;
     IOCommandGate *commandGate = nullptr;
     IOTimerEventSource *scanTimer = nullptr;
     IOTimerEventSource *joinTimer = nullptr;
     AICInfraInterface *nativeInterface = nullptr;
     AICNativeEthernetInterface *bsdInterface = nullptr;
+    IOSkywalkPacketBufferPool *skywalkPool = nullptr;
+    IOSkywalkPacketQueue *skywalkQueues[4] = {};
     bool nativeAttached = false;
     bool controllerAttached = false;
     bool nativeStarted = false;
     IOLock *stateLock = nullptr;
     AICNativeRadioState radioState = {};
     bool stateReady = false;
+    uint8_t requestedStationMac[6] = {};
+    bool requestedStationMacReady = false;
     AICNativePowerMailbox powerMailbox;
     AICNativeFrameMailbox receivedFrames;
-    AICNativeFrameMailbox transmitFrames;
+    AICNativeTransmitMailbox transmitFrames;
     AICNativeScanMailbox scanMailbox;
+    AICWCLBssCache bssCache;
     AICNativeJoinMailbox joinMailbox;
     AICNativeLeaveMailbox leaveMailbox;
     bool scanBridgeEnabled = false;
@@ -189,9 +222,37 @@ private:
 
 OSDefineMetaClassAndStructors(AICAirPortController, IO80211Controller)
 
+#if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+// Sequoia's WCL does not treat scan messages as a live scan until the driver
+// announces that its radio backend is available. Match the event layout used
+// by the pinned AirportItlwm reference; never announce availability before
+// the USB-owning scan bridge has published a powered radio.
+struct AICWCLDriverAvailability {
+    uint32_t version;
+    uint32_t reserved0;
+    uint32_t available;
+    uint32_t reserved1;
+    uint32_t reason;
+    uint32_t subReason;
+    uint8_t reserved2[0xf8 - 24];
+};
+static_assert(sizeof(AICWCLDriverAvailability) == 0xf8,
+              "WCL driver availability event size");
+#endif
+
 bool AICAirPortController::init(OSDictionary *dictionary) {
-    if (!IO80211Controller::init(dictionary)) return false;
+    queue = AICDefaultWorkQueue();
+    IOLog("AICNative: controller init, default queue=%p\n", queue);
+    if (!queue) return false;
+    queue->retain();
+    if (!IO80211Controller::init(dictionary)) {
+        IOLog("AICNative: controller base init failed\n");
+        OSSafeReleaseNULL(queue);
+        return false;
+    }
     stateLock = IOLockAlloc();
+    IOLog("AICNative: controller init complete, lock=%p\n", stateLock);
+    if (!stateLock) OSSafeReleaseNULL(queue);
     return stateLock != nullptr;
 }
 
@@ -199,6 +260,7 @@ void AICAirPortController::free() {
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
     detachNativeInterface();
 #endif
+    releaseCoreCapture();
     if (commandGate) {
         if (queue && commandGate->getWorkLoop())
             queue->removeEventSource(commandGate);
@@ -230,35 +292,51 @@ void AICAirPortController::free() {
 }
 
 bool AICAirPortController::start(IOService *provider) {
-    // This is never enabled in the packaged probe. A separate test-EFI build
-    // may start the controller headlessly to validate the user-client ABI.
-    // No IO80211 interface, network route, or USB claim is created here.
+    // Only the test-EFI variant enables this path. Never publish a network
+    // interface until the provider, shared work queue, and base start succeed.
 #if defined(AIC_HEADLESS_BRIDGE_PROBE) && AIC_HEADLESS_BRIDGE_PROBE
     AICNativeUSBProvider *wrapper = OSDynamicCast(AICNativeUSBProvider, provider);
     if (version_major != 24 || version_minor < 2 || !wrapper ||
-        !AICVerifiedUSBInterface(wrapper->getProvider()))
-        return false;
-    queue = wrapper->nativeQueue();
-    if (!AICNativeSharedWorkLoop(static_cast<IOWorkLoop *>(queue),
-                                 wrapper->getWorkLoop())) {
-        queue = nullptr;
+        !AICVerifiedUSBInterface(wrapper->getProvider())) {
+        IOLog("AICNative: controller start rejected provider\n");
         return false;
     }
-    queue->retain();
+    if (!AICNativeSharedWorkLoop(static_cast<IOWorkLoop *>(queue),
+                                 wrapper->getWorkLoop())) {
+        IOLog("AICNative: controller/provider queue mismatch\n");
+        return false;
+    }
+    IOLog("AICNative: controller start, shared queue=%p\n", queue);
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
     commandGate = IOCommandGate::commandGate(this);
-    if (!commandGate || queue->addEventSource(commandGate) != kIOReturnSuccess)
+    if (!commandGate || queue->addEventSource(commandGate) != kIOReturnSuccess) {
+        IOLog("AICNative: controller command gate failed\n");
         return false;
+    }
     scanTimer = IOTimerEventSource::timerEventSource(
         kIOTimerEventSourceOptionsPriorityWorkLoop, this, scanTimerFired);
-    if (!scanTimer || queue->addEventSource(scanTimer) != kIOReturnSuccess)
+    if (!scanTimer || queue->addEventSource(scanTimer) != kIOReturnSuccess) {
+        IOLog("AICNative: controller scan timer failed\n");
         return false;
+    }
     joinTimer = IOTimerEventSource::timerEventSource(
         kIOTimerEventSourceOptionsPriorityWorkLoop, this, joinTimerFired);
-    if (!joinTimer || queue->addEventSource(joinTimer) != kIOReturnSuccess)
+    if (!joinTimer || queue->addEventSource(joinTimer) != kIOReturnSuccess) {
+        IOLog("AICNative: controller join timer failed\n");
         return false;
+    }
 #endif
-    if (!IO80211Controller::start(provider)) return false;
+    if (!initCoreCapture()) {
+        IOLog("AICNative: CoreCapture setup failed\n");
+        releaseCoreCapture();
+        return false;
+    }
+    if (!IO80211Controller::start(provider)) {
+        IOLog("AICNative: controller base start failed\n");
+        releaseCoreCapture();
+        return false;
+    }
+    IOLog("AICNative: controller base start complete\n");
     registerService();
     return true;
 #else
@@ -269,6 +347,11 @@ bool AICAirPortController::start(IOService *provider) {
 }
 
 void AICAirPortController::stop(IOService *provider) {
+    // The IO80211 family must stop its controller while the registered
+    // Skywalk interface and BSD child are still intact. A direct call to the
+    // child interface's stop() from our detach path caused a page fault in
+    // IO80211SkywalkInterface::stop on USB teardown.
+    IO80211Controller::stop(provider);
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
     detachNativeInterface();
 #endif
@@ -280,7 +363,10 @@ void AICAirPortController::stop(IOService *provider) {
         bzero(&radioState, sizeof(radioState));
         IOLockUnlock(stateLock);
     }
-    IO80211Controller::stop(provider);
+    // Power-management callbacks can outlive stop() on the Skywalk child.
+    // Keep its logger and pipes alive until free(), after IOKit has released
+    // the controller, so a delayed setPowerState() cannot log through a
+    // stopped CoreCapture stream.
 }
 
 IONetworkInterface *AICAirPortController::createInterface() {
@@ -299,6 +385,68 @@ IONetworkInterface *AICAirPortController::createInterface() {
 }
 
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
+static UInt32 AICSkywalkTxSubmitUnimplemented(
+    OSObject *, IOSkywalkPacketQueue *, IOSkywalkPacket *const *, UInt32 count,
+    void *) {
+    // Registration research only: consuming a packet without delivering it
+    // to the radio would falsely report a working native data path.
+    static volatile UInt32 calls = 0;
+    if (__sync_fetch_and_add(&calls, 1) < 8)
+        IOLog("AICNative: Skywalk TX submission invoked, packets=%u\n", count);
+    return 0;
+}
+
+static UInt32 AICSkywalkRxSubmitUnimplemented(
+    OSObject *, IOSkywalkPacketQueue *, IOSkywalkPacket *const *, UInt32 count,
+    void *) {
+    static volatile UInt32 calls = 0;
+    if (__sync_fetch_and_add(&calls, 1) < 8)
+        IOLog("AICNative: Skywalk RX submission invoked, packets=%u\n", count);
+    return 0;
+}
+
+static UInt32 AICSkywalkCompleteUnimplemented(
+    OSObject *, IOSkywalkPacketQueue *, IOSkywalkPacket **, UInt32,
+    void *) {
+    return 0;
+}
+
+bool AICAirPortController::createSkywalkQueues() {
+    if (!nativeInterface || skywalkPool) return false;
+    IOSkywalkPacketBufferPool::PoolOptions options = {};
+    options.packetCount = 64;
+    options.bufferCount = 64;
+    options.bufferSize = 2048;
+    options.maxBuffersPerPacket = 1;
+    skywalkPool = IOSkywalkPacketBufferPool::withName(
+        "AICNativeSTA", nativeInterface, 1, &options);
+    if (!skywalkPool) return false;
+    skywalkQueues[0] = AICCreateTxSubmissionQueue(
+        skywalkPool, 64, 0, nativeInterface,
+        AICSkywalkTxSubmitUnimplemented, nullptr, 0);
+    skywalkQueues[1] = AICCreateTxCompletionQueue(
+        skywalkPool, 64, 0, nativeInterface,
+        AICSkywalkCompleteUnimplemented, nullptr, 0);
+    skywalkQueues[2] = AICCreateRxSubmissionQueue(
+        skywalkPool, 64, 0, 0, nativeInterface,
+        AICSkywalkRxSubmitUnimplemented, nullptr, 0);
+    skywalkQueues[3] = AICCreateRxCompletionQueue(
+        skywalkPool, 64, 0, nativeInterface,
+        AICSkywalkCompleteUnimplemented, nullptr, 0);
+    for (auto *entry : skywalkQueues) {
+        if (!entry) {
+            releaseSkywalkQueues();
+            return false;
+        }
+    }
+    return true;
+}
+
+void AICAirPortController::releaseSkywalkQueues() {
+    for (auto &entry : skywalkQueues) OSSafeReleaseNULL(entry);
+    OSSafeReleaseNULL(skywalkPool);
+}
+
 IOReturn AICAirPortController::attachNativeGated(
     OSObject *owner, void *, void *, void *, void *) {
     auto *controller = OSDynamicCast(AICAirPortController, owner);
@@ -321,6 +469,13 @@ IOReturn AICAirPortController::updateLinkGated(
     IOLockUnlock(controller->stateLock);
     controller->setLinkStatus(kIONetworkLinkValid |
         (connected ? kIONetworkLinkActive : 0));
+    ifnet_t interface = controller->bsdInterface->getIfnet();
+    if (interface) {
+        const uint16_t flags = ifnet_flags(interface);
+        ifnet_set_flags(interface,
+                        connected ? flags | IFF_RUNNING : flags & ~IFF_RUNNING,
+                        IFF_RUNNING);
+    }
     if (!connected && controller->nativeInterface) {
         controller->nativeInterface->setCurrentApAddress(nullptr);
         controller->nativeInterface->setLinkState(
@@ -384,29 +539,24 @@ bool AICAirPortController::attachNativeInterface() {
     bsdInterface = typedBSD;
     IOLockUnlock(stateLock);
     IOSkywalkEthernetInterface::RegistrationInfo info = {};
-    if (!nativeInterface->initRegistrationInfo(&info, 1, sizeof(info)) ||
-        !nativeInterface->mExpansionData ||
-        !nativeInterface->mExpansionData2) {
+    if (!nativeInterface->initRegistrationInfo(&info, 1, sizeof(info))) {
         detachNativeInterface();
         return false;
     }
-    auto *networkInfo = static_cast<IOSkywalkNetworkInterface::RegistrationInfo *>(
-        IOMalloc(sizeof(IOSkywalkNetworkInterface::RegistrationInfo)));
-    auto *ethernetInfo = static_cast<IOSkywalkEthernetInterface::RegistrationInfo *>(
-        IOMalloc(sizeof(IOSkywalkEthernetInterface::RegistrationInfo)));
-    if (!networkInfo || !ethernetInfo) {
-        if (networkInfo) IOFree(networkInfo, sizeof(*networkInfo));
-        if (ethernetInfo) IOFree(ethernetInfo, sizeof(*ethernetInfo));
-        detachNativeInterface();
-        return false;
-    }
-    bcopy(&info, networkInfo, sizeof(*networkInfo));
-    bcopy(&info, ethernetInfo, sizeof(*ethernetInfo));
-    nativeInterface->mExpansionData->fRegistrationInfo = networkInfo;
-    nativeInterface->mExpansionData2->fRegistrationInfo = ethernetInfo;
+    // These expansion-data pointers belong to IOSkywalkFamily. The former
+    // IOMalloc assignments made teardown kfree_type() panic on macOS 15.
+    // Do not populate them until registration uses the family's queue/pool
+    // API, which allocates the matching typed objects itself.
     nativeInterface->deferBSDAttach(true);
     nativeStarted = nativeInterface->start(this);
     if (!nativeStarted) {
+        detachNativeInterface();
+        return false;
+    }
+    if (!createSkywalkQueues() ||
+        AICRegisterSkywalkEthernet(nativeInterface, &info, skywalkQueues, 4,
+                                   skywalkPool, skywalkPool, 0) !=
+            kIOReturnSuccess) {
         detachNativeInterface();
         return false;
     }
@@ -433,6 +583,9 @@ void AICAirPortController::detachNativeInterface() {
         postMessage(nativeInterface, 213, &event, sizeof(event), true);
     }
     leaveMailbox.clear();
+    // Do not call nativeInterface->stop(this) explicitly. The family owns
+    // that stop sequence; invoking it directly on an already registered
+    // interface panicked at IO80211SkywalkInterface::stop+0xd5.
     if (stateLock) {
         IOLockLock(stateLock);
         AICNativeEthernetInterface *bsd = bsdInterface;
@@ -441,9 +594,9 @@ void AICAirPortController::detachNativeInterface() {
         if (bsd) IONetworkController::detachInterface(bsd, true);
     }
     if (nativeInterface) {
-        if (nativeStarted) nativeInterface->stop(this);
         if (controllerAttached) detachInterface(nativeInterface, true);
         if (nativeAttached) nativeInterface->detach(this);
+        releaseSkywalkQueues();
         OSSafeReleaseNULL(nativeInterface);
     }
     nativeStarted = controllerAttached = nativeAttached = false;
@@ -553,14 +706,25 @@ IOReturn AICAirPortController::joinGated(
         if (!payload || self->joinMailbox.active()) return kIOReturnBusy;
         AICNativeScanTicket scan = {};
         if (self->scanMailbox.read(&scan)) return kIOReturnBusy;
+        uint8_t stationMac[6] = {};
         IOLockLock(self->stateLock);
         const bool ready = self->stateReady && self->radioState.powered &&
                            !self->radioState.associated;
+        const bool macReady = self->requestedStationMacReady;
+        if (macReady)
+            bcopy(self->requestedStationMac, stationMac, sizeof(stationMac));
         IOLockUnlock(self->stateLock);
-        if (!ready) return kIOReturnNotReady;
+        if (!ready || !macReady)
+            return kIOReturnNotReady;
+        const auto *requested = static_cast<const AICWCLJoinRequest *>(payload);
+        IOLockLock(self->stateLock);
+        const bool bssReady = self->bssCache.select(requested->bssid);
+        IOLockUnlock(self->stateLock);
+        if (!bssReady) return kIOReturnNotReady;
         uint32_t sequence = 0;
         if (!self->joinMailbox.begin(
-                *static_cast<const AICWCLJoinRequest *>(payload), now,
+                *requested,
+                stationMac, now,
                 &sequence)) return kIOReturnBadArgument;
         if (!self->joinTimer || self->joinTimer->setTimeoutMS(
                 AICNativeJoinMailbox::kTimeoutMillis) != kIOReturnSuccess) {
@@ -595,6 +759,24 @@ IOReturn AICAirPortController::joinGated(
         AICWCLConnectionEvent event = AICMakeWCLConnectionEvent(
             bssid, completion.status == 0,
             static_cast<int32_t>(completion.status));
+        if (!completion.status) {
+            AICWCLLinkStatusEvent link = AICMakeWCLLinkStatusEvent(bssid, true);
+            IOReturn linked = self->postMessage(
+                self->nativeInterface, 216, &link, sizeof(link), true);
+            if (linked == kIOReturnSuccess) {
+                // The successful WPA2 path selected this BSSID from a real
+                // scan result. WCL needs FirstBeacon before ConnectComplete
+                // to leave NET_MANAGER_STATE_LINK_DOWN on macOS 15.
+                AICWCLFirstBeaconEvent beacon =
+                    AICMakeWCLFirstBeaconEvent(bssid);
+                linked = self->postMessage(
+                    self->nativeInterface, 212, &beacon, sizeof(beacon), true);
+            }
+            if (linked != kIOReturnSuccess) {
+                event = AICMakeWCLConnectionEvent(bssid, false, linked);
+                self->leaveMailbox.request();
+            }
+        }
         return self->postMessage(self->nativeInterface, 213, &event,
                                  sizeof(event), true);
     }
@@ -631,6 +813,11 @@ IOReturn AICAirPortController::scanGated(
             if (payload != self->scanOwner) return kIOReturnSuccess;
             self->scanBridgeEnabled = false;
             self->scanOwner = nullptr;
+            AICWCLDriverAvailability unavailable = {};
+            unavailable.version = 3;
+            unavailable.reason = 0xe0821804;
+            self->postMessage(self->nativeInterface, 55, &unavailable,
+                              sizeof(unavailable), true);
             self->leaveMailbox.clear();
             // A crashed USB-owning process must not leave a ghost connected
             // interface or accept packets after its privileged client closes.
@@ -683,6 +870,20 @@ IOReturn AICAirPortController::scanGated(
         if (!powered) return kIOReturnNotReady;
         self->scanBridgeEnabled = true;
         self->scanOwner = static_cast<IOUserClient *>(payload);
+        uint32_t reset = 1;
+        self->postMessage(self->nativeInterface, 49, &reset,
+                          sizeof(reset), true);
+        AICWCLDriverAvailability available = {};
+        available.version = 3;
+        available.available = 1;
+        available.reason = 0xe0821803;
+        const IOReturn announced = self->postMessage(
+            self->nativeInterface, 55, &available, sizeof(available), true);
+        if (announced != kIOReturnSuccess) {
+            self->scanBridgeEnabled = false;
+            self->scanOwner = nullptr;
+            return announced;
+        }
         return kIOReturnSuccess;
     }
     if (!self->scanBridgeEnabled) return kIOReturnNotReady;
@@ -719,6 +920,12 @@ IOReturn AICAirPortController::scanGated(
         if (!self->scanMailbox.acceptResult(result.sequence, result.data,
                                             result.length, now))
             return kIOReturnBadArgument;
+        IOLockLock(self->stateLock);
+        const bool cached = self->bssCache.remember(
+            result.data, result.length, result.beacon,
+            result.beaconLength);
+        IOLockUnlock(self->stateLock);
+        if (!cached) return kIOReturnBadArgument;
         return self->postMessage(self->nativeInterface, 201,
                                  const_cast<uint8_t *>(result.data),
                                  result.length, true);
@@ -913,7 +1120,7 @@ SInt32 AICAirPortController::handleCardSpecific(
 IOReturn AICAirPortController::getDRIVER_VERSION(
     IO80211SkywalkInterface *, apple80211_version_data *data) {
     if (!data) return kIOReturnBadArgument;
-    static const char driverVersion[] = "AIC 8800D80 native research 0.0.1";
+    static const char driverVersion[] = "AIC 8800D80 native 0.0.18";
     static_assert(sizeof(driverVersion) <= sizeof(data->string), "driver version too long");
     bzero(data, sizeof(*data));
     data->version = APPLE80211_VERSION;
@@ -936,15 +1143,17 @@ IOReturn AICAirPortController::getHARDWARE_VERSION(
 
 IOReturn AICAirPortController::getCARD_CAPABILITIES(
     IO80211SkywalkInterface *, apple80211_capability_data *data) {
-    if (!data || !stateLock) return kIOReturnBadArgument;
-    IOLockLock(stateLock);
-    const bool available = stateReady;
-    IOLockUnlock(stateLock);
-    if (!available) return kIOReturnNotReady;
+    if (!data) return kIOReturnBadArgument;
+    // Capabilities belong to the controller, not the current USB owner.
+    // airportd queries them before the userspace radio bridge has published
+    // its first state; refusing that query can make en2 disappear from
+    // CoreWLAN even though the IOService/BSD interface remains registered.
     bzero(data, sizeof(*data));
     data->version = APPLE80211_VERSION;
     // Only WPA2/CCMP has been exercised with this dongle. Do not advertise
-    // AWDL, WPA3, monitor, WEP, or scan-completion support prematurely.
+    // AWDL, WPA3, monitor, or WEP. The scan bridge now delivers completion
+    // through WCL; without this Sequoia capability bit, Apple80211Scan does
+    // not monitor the completion event and discards the native scan.
     if (!AICSetNativeCapability(data->capabilities,
                                 sizeof(data->capabilities),
                                 APPLE80211_CAP_AES_CCM) ||
@@ -952,6 +1161,7 @@ IOReturn AICAirPortController::getCARD_CAPABILITIES(
                                 sizeof(data->capabilities),
                                 APPLE80211_CAP_WPA2))
         return kIOReturnError;
+    data->capabilities[5] |= 0x40; // WCL scan-completion event support.
     return kIOReturnSuccess;
 }
 
@@ -959,11 +1169,9 @@ IOReturn AICAirPortController::getPOWER(
     IO80211SkywalkInterface *, apple80211_power_data *data) {
     if (!data || !stateLock) return kIOReturnBadArgument;
     IOLockLock(stateLock);
-    if (!stateReady) {
-        IOLockUnlock(stateLock);
-        return kIOReturnNotReady;
-    }
-    const bool powered = radioState.powered != 0;
+    // Before the bridge owns the USB radio, report OFF rather than refusing
+    // the query. macOS must be able to discover and later power on en2.
+    const bool powered = stateReady && radioState.powered != 0;
     IOLockUnlock(stateLock);
     bzero(data, sizeof(*data));
     data->version = APPLE80211_VERSION;
@@ -976,8 +1184,13 @@ IOReturn AICAirPortController::publishRadioState(
     const AICNativeRadioState &state) {
     if (!stateLock || !AICNativeRadioStateValid(state)) return kIOReturnBadArgument;
     IOLockLock(stateLock);
+    if (!requestedStationMacReady) {
+        bcopy(state.mac, requestedStationMac, sizeof(requestedStationMac));
+        requestedStationMacReady = true;
+    }
     const bool linkChanged = stateReady &&
-        (radioState.associated != state.associated ||
+        (radioState.powered != state.powered ||
+         radioState.associated != state.associated ||
          bcmp(radioState.bssid, state.bssid, 6) != 0 ||
          bcmp(radioState.mac, state.mac, 6) != 0);
     if (linkChanged || !state.powered) {
@@ -997,6 +1210,50 @@ IOReturn AICAirPortController::publishRadioState(
     return kIOReturnSuccess;
 }
 
+IOReturn AICAirPortController::setStationMac(const uint8_t mac[6]) {
+    if (!mac || !stateLock || (mac[0] & 1)) return kIOReturnBadArgument;
+    bool nonzero = false;
+    for (unsigned i = 0; i < 6; ++i) nonzero |= mac[i] != 0;
+    if (!nonzero) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    if (!stateReady || radioState.associated || !bsdInterface ||
+        !bsdInterface->getIfnet()) {
+        IOLockUnlock(stateLock);
+        return kIOReturnNotReady;
+    }
+    AICNativeEthernetInterface *target = bsdInterface;
+    target->retain();
+    ifnet_t interface = target->getIfnet();
+    const errno_t referenceStatus = ifnet_reference(interface);
+    IOLockUnlock(stateLock);
+    if (referenceStatus != 0) {
+        target->release();
+        return kIOReturnNotReady;
+    }
+    // WCL changes the station address without IOEthernetInterface's normal
+    // MAC ioctl. DHCP/ARP use the BSD address, while the radio join uses the
+    // requested address; both must be identical before association begins.
+    const errno_t addressStatus = ifnet_set_lladdr(interface, mac, 6);
+    if (addressStatus == 0) {
+        target->setProperty(kIOMACAddress, const_cast<uint8_t *>(mac), 6);
+        IOLockLock(stateLock);
+        if (stateReady && !radioState.associated && bsdInterface == target) {
+            bcopy(mac, requestedStationMac, sizeof(requestedStationMac));
+            requestedStationMacReady = true;
+        } else {
+            IOLockUnlock(stateLock);
+            ifnet_release(interface);
+            target->release();
+            return kIOReturnNotReady;
+        }
+        IOLockUnlock(stateLock);
+    }
+    ifnet_release(interface);
+    target->release();
+    if (addressStatus != 0) return kIOReturnError;
+    return kIOReturnSuccess;
+}
+
 IOReturn AICAirPortController::copyRadioState(AICNativeRadioState *state) {
     if (!state || !stateLock) return kIOReturnBadArgument;
     IOLockLock(stateLock);
@@ -1007,6 +1264,30 @@ IOReturn AICAirPortController::copyRadioState(AICNativeRadioState *state) {
     *state = radioState;
     IOLockUnlock(stateLock);
     return kIOReturnSuccess;
+}
+
+IOReturn AICAirPortController::copyAssociatedBss(void *reply,
+                                                size_t capacity) {
+    if (!reply || capacity < AICWCLBssCache::kReplyCapacity || !stateLock)
+        return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    // WCL may ask for BSS_INFO while the service is still publishing its
+    // association state. The selected scan result is pinned by beginJoin and
+    // remains valid through the synchronous LinkStatus callback.
+    const bool ready = stateReady && bssCache.copySelected(reply, capacity);
+    IOLockUnlock(stateLock);
+    return ready ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
+IOReturn AICAirPortController::copyAssociatedBeacon(void *reply,
+                                                   size_t capacity) {
+    if (!reply || capacity < AICWCLBssCache::kBeaconReplyCapacity || !stateLock)
+        return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    const bool ready = stateReady &&
+        bssCache.copySelectedBeacon(reply, capacity);
+    IOLockUnlock(stateLock);
+    return ready ? kIOReturnSuccess : kIOReturnNotReady;
 }
 
 IOReturn AICAirPortController::nextCommand(AICNativeCommand *command) {
@@ -1071,6 +1352,18 @@ IOReturn AICAirPortController::nextReceivedFrame(AICNativeFrame *frame) {
     return available ? kIOReturnSuccess : kIOReturnNotReady;
 }
 
+IOReturn AICAirPortController::submitReceivedFrames(
+    const AICNativeFrameBatch &batch) {
+    if (!AICNativeFrameBatchValid(batch, true)) return kIOReturnBadArgument;
+    // Frames are still delivered through the same validated ingress path;
+    // batching removes user-client crossings without changing packet rules.
+    for (uint32_t i = 0; i < batch.count; ++i) {
+        const IOReturn status = submitReceivedFrame(batch.frames[i]);
+        if (status != kIOReturnSuccess) return status;
+    }
+    return kIOReturnSuccess;
+}
+
 IOReturn AICAirPortController::queueTransmitFrame(
     const AICNativeFrame &frame) {
     if (!stateLock || !AICNativeFrameValid(frame, false))
@@ -1100,8 +1393,19 @@ UInt32 AICAirPortController::outputPacket(mbuf_t packet, void *) {
         if (++transmitSequence == 0) ++transmitSequence;
         frame.sequence = transmitSequence;
         IOLockUnlock(stateLock);
-        valid = mbuf_copydata(packet, 0, length, frame.data) == 0 &&
-                queueTransmitFrame(frame) == kIOReturnSuccess;
+        if (mbuf_copydata(packet, 0, length, frame.data) == 0) {
+            const IOReturn status = queueTransmitFrame(frame);
+            valid = status == kIOReturnSuccess;
+            if (status == kIOReturnNoSpace) {
+                // Count only full-mailbox drops; print at powers of two so a
+                // browser burst is measurable without logging packet data or
+                // flooding the kernel log during a sustained backlog.
+                static volatile uint32_t fullDrops = 0;
+                const uint32_t count = __sync_add_and_fetch(&fullDrops, 1);
+                if ((count & (count - 1)) == 0)
+                    IOLog("AICNative: TX mailbox full, drops=%u\n", count);
+            }
+        }
     }
     freePacket(packet);
     return valid ? kIOReturnOutputSuccess : kIOReturnOutputDropped;
@@ -1113,6 +1417,19 @@ IOReturn AICAirPortController::nextTransmitFrame(AICNativeFrame *frame) {
     const bool available = transmitFrames.pop(frame);
     IOLockUnlock(stateLock);
     return available ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
+IOReturn AICAirPortController::nextTransmitFrames(AICNativeFrameBatch *batch) {
+    if (!batch || !stateLock) return kIOReturnBadArgument;
+    bzero(batch, sizeof(*batch));
+    batch->version = kAICNativeBridgeVersion;
+    IOLockLock(stateLock);
+    while (batch->count < kAICNativeFrameBatchCapacity &&
+           transmitFrames.pop(&batch->frames[batch->count])) {
+        ++batch->count;
+    }
+    IOLockUnlock(stateLock);
+    return batch->count ? kIOReturnSuccess : kIOReturnNotReady;
 }
 
 extern "C" IOReturn AICNativePublishState(
@@ -1129,6 +1446,26 @@ extern "C" IOReturn AICNativeCopyRadioState(
     AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
     if (!controller) return kIOReturnBadArgument;
     return controller->copyRadioState(state);
+}
+
+extern "C" IOReturn AICNativeCopyAssociatedBss(
+    IOService *service, void *reply, size_t capacity) {
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->copyAssociatedBss(reply, capacity)
+                      : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeCopyAssociatedBeacon(
+    IOService *service, void *reply, size_t capacity) {
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->copyAssociatedBeacon(reply, capacity)
+                      : kIOReturnBadArgument;
+}
+
+extern "C" IOReturn AICNativeSetStationMac(
+    IOService *service, const uint8_t mac[6]) {
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->setStationMac(mac) : kIOReturnBadArgument;
 }
 
 extern "C" IOReturn AICNativeNextCommand(
@@ -1228,12 +1565,28 @@ extern "C" IOReturn AICNativeSubmitReceivedFrame(
     return controller->submitReceivedFrame(*frame);
 }
 
+extern "C" IOReturn AICNativeSubmitReceivedFrames(
+    IOService *service, const AICNativeFrameBatch *batch) {
+    if (!service || !batch) return kIOReturnBadArgument;
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->submitReceivedFrames(*batch)
+                      : kIOReturnBadArgument;
+}
+
 extern "C" IOReturn AICNativeNextTransmitFrame(
     IOService *service, AICNativeFrame *frame) {
     if (!service || !frame) return kIOReturnBadArgument;
     AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
     if (!controller) return kIOReturnBadArgument;
     return controller->nextTransmitFrame(frame);
+}
+
+extern "C" IOReturn AICNativeNextTransmitFrames(
+    IOService *service, AICNativeFrameBatch *batch) {
+    if (!service || !batch) return kIOReturnBadArgument;
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->nextTransmitFrames(batch)
+                      : kIOReturnBadArgument;
 }
 
 // These are the controller-side handoff points for a future IO80211 data path.
@@ -1268,8 +1621,15 @@ IOReturn AICAirPortController::setPOWER(
 }
 
 IOReturn AICAirPortController::getCOUNTRY_CODE(
-    IO80211SkywalkInterface *, apple80211_country_code_data *) {
-    return kIOReturnUnsupported;
+    IO80211SkywalkInterface *, apple80211_country_code_data *data) {
+    if (!data) return kIOReturnBadArgument;
+    bzero(data, sizeof(*data));
+    data->version = APPLE80211_VERSION;
+    // Unknown/world domain for passive scan research only. This is not a
+    // claim that the dongle is certified for transmission in any country.
+    data->cc[0] = 'X';
+    data->cc[1] = '0';
+    return kIOReturnSuccess;
 }
 
 IOReturn AICAirPortController::setCOUNTRY_CODE(
@@ -1282,12 +1642,107 @@ IOReturn AICAirPortController::setGET_DEBUG_INFO(
     return kIOReturnUnsupported;
 }
 
+bool AICAirPortController::initCoreCapture() {
+    if (!queue || logPipe || eventPipe || snapshotsPipe) return false;
+
+    CCPipeOptions options = {};
+    options.pipe_size = 0x200000;
+    options.min_log_size_notify = 0xccccc;
+    options.notify_threshold = 1000;
+    options.log_data_type = 1;
+    options.pad9 = 0x1000000;
+    options.pad10 = 2;
+    strlcpy(options.file_name, "AIC_Driver_Logs", sizeof(options.file_name));
+    strlcpy(options.name, "wlan0", sizeof(options.name));
+    strlcpy(options.directory_name, "WiFi", sizeof(options.directory_name));
+    logPipe = CCPipe::withOwnerNameCapacity(
+        this, "local.victor.AICNativeProbe", "DriverLogs", &options);
+    if (!logPipe || !(logPipeStarted = logPipe->CCPipe::startPipe()))
+        return false;
+    CCStreamOptions streamOptions = {};
+    CCStream *stream = CCStream::withPipeAndName(
+        logPipe, "AICNative", &streamOptions);
+    logger = OSDynamicCast(CCLogStream, stream);
+    if (!logger) {
+        OSSafeReleaseNULL(stream);
+        return false;
+    }
+
+    bzero(&options, sizeof(options));
+    options.pipe_size = 0x200000;
+    options.min_log_size_notify = 0xccccc;
+    options.notify_threshold = 1000;
+    options.pad9 = 0x2;
+    options.pad10 = 0x2800000;
+    strlcpy(options.file_name, "AIC_Datapath", sizeof(options.file_name));
+    strlcpy(options.directory_name, "WiFi", sizeof(options.directory_name));
+    eventPipe = CCPipe::withOwnerNameCapacity(
+        this, "local.victor.AICNativeProbe", "DatapathEvents", &options);
+    if (!eventPipe || !(eventPipeStarted = eventPipe->CCPipe::startPipe()))
+        return false;
+
+    bzero(&options, sizeof(options));
+    options.pipe_type = 0x200000001ULL;
+    options.log_data_type = 2;
+    options.pipe_size = 128;
+    strlcpy(options.file_name, "AIC_State_Snapshots", sizeof(options.file_name));
+    strlcpy(options.name, "0", sizeof(options.name));
+    strlcpy(options.directory_name, "WiFi", sizeof(options.directory_name));
+    snapshotsPipe = CCPipe::withOwnerNameCapacity(
+        this, "local.victor.AICNativeProbe", "StateSnapshots", &options);
+    if (!snapshotsPipe ||
+        !(snapshotsPipeStarted = snapshotsPipe->CCPipe::startPipe()))
+        return false;
+
+    bzero(&streamOptions, sizeof(streamOptions));
+    streamOptions.stream_type = 1;
+    streamOptions.console_level = ~0ULL;
+    faultStream = CCStream::withPipeAndName(
+        snapshotsPipe, "FaultReporter", &streamOptions);
+    CCDataStream *data = OSDynamicCast(CCDataStream, faultStream);
+    if (!data) return false;
+    coreFaultReporter = CCFaultReporter::withStreamWorkloop(data, queue);
+    if (!coreFaultReporter) return false;
+    faultReporter = IO80211FaultReporter::allocWithParams(coreFaultReporter);
+    return faultReporter != nullptr;
+}
+
+void AICAirPortController::releaseCoreCapture() {
+    OSSafeReleaseNULL(faultReporter);
+    OSSafeReleaseNULL(coreFaultReporter);
+    OSSafeReleaseNULL(faultStream);
+    OSSafeReleaseNULL(logger);
+    if (snapshotsPipeStarted) {
+        snapshotsPipe->CCPipe::stopPipe();
+        snapshotsPipeStarted = false;
+    }
+    if (eventPipeStarted) {
+        eventPipe->CCPipe::stopPipe();
+        eventPipeStarted = false;
+    }
+    if (logPipeStarted) {
+        logPipe->CCPipe::stopPipe();
+        logPipeStarted = false;
+    }
+    OSSafeReleaseNULL(snapshotsPipe);
+    OSSafeReleaseNULL(eventPipe);
+    OSSafeReleaseNULL(logPipe);
+}
+
 CCLogStream *AICAirPortController::getLogger() const {
-    return nullptr;
+    return logger;
+}
+
+bool AICAirPortController::getLogPipes(
+    CCPipe **log, CCPipe **event, CCPipe **snapshots) {
+    if (log) *log = logPipe;
+    if (event) *event = eventPipe;
+    if (snapshots) *snapshots = snapshotsPipe;
+    return logPipe && eventPipe && snapshotsPipe;
 }
 
 CommonFaultReporter *AICAirPortController::getFaultReporterFromDriver() {
-    return nullptr;
+    return faultReporter;
 }
 
 IOReturn AICAirPortController::newUserClient(
@@ -1326,4 +1781,4 @@ extern "C" {
 kmod_start_func_t *_realmain = nullptr;
 kmod_stop_func_t *_antimain = nullptr;
 }
-KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.1", _start, _stop)
+KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.18", _start, _stop)

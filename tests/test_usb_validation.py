@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from management import transmit_action_frame
+from layouts import me_channel_config_request, me_config_request
+from protocol import command
 from wpa2 import transmit_frame
 
 
@@ -23,6 +25,8 @@ class USBValidationTests(unittest.TestCase):
         cls.lib = ctypes.CDLL(str(library))
         cls.lib.wifi_validate_data_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         cls.lib.wifi_validate_data_frame.restype = ctypes.c_uint32
+        cls.lib.wifi_validate_command_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        cls.lib.wifi_validate_command_frame.restype = ctypes.c_uint32
 
     @classmethod
     def tearDownClass(cls):
@@ -30,6 +34,25 @@ class USBValidationTests(unittest.TestCase):
 
     def valid(self, frame):
         return self.lib.wifi_validate_data_frame(ctypes.create_string_buffer(frame), len(frame)) == 0
+
+    def valid_command(self, frame):
+        return self.lib.wifi_validate_command_frame(
+            ctypes.create_string_buffer(frame), len(frame)) == 0
+
+    def test_accepts_only_exact_me_config_frame(self):
+        frame = command(0x1400, me_config_request())
+        self.assertEqual(len(frame), 128)
+        self.assertTrue(self.valid_command(frame))
+        self.assertFalse(self.valid_command(frame[:-1]))
+        changed = bytearray(frame)
+        changed[14] = 111
+        self.assertFalse(self.valid_command(bytes(changed)))
+
+    def test_accepts_only_exact_me_channel_config_frame(self):
+        frame = command(0x1402, me_channel_config_request())
+        self.assertEqual(len(frame), 270)
+        self.assertTrue(self.valid_command(frame))
+        self.assertFalse(self.valid_command(frame[:-1]))
 
     def test_accepts_bounded_action_and_existing_ethernet(self):
         source = bytes.fromhex('021122334455')
@@ -41,6 +64,16 @@ class USBValidationTests(unittest.TestCase):
         self.assertFalse(self.valid(bytes(robust)))
         ethernet = bytes.fromhex('00112233445566778899aabb0800') + bytes(50)
         self.assertTrue(self.valid(transmit_frame(ethernet, 0, 0, 0x80000000)))
+
+    def test_unconfirmed_ethernet_avoids_exact_usb_packet_boundary(self):
+        header = bytes.fromhex('00112233445566778899aabb0800')
+        for size in (494, 1006):
+            with self.subTest(size=size):
+                packet = transmit_frame(header + bytes(size - 14), 0, 0)
+                self.assertEqual(len(packet), size + 19)
+                self.assertEqual(len(packet) % 512, 1)
+                self.assertEqual(packet[-1], 0)
+                self.assertTrue(self.valid(packet))
 
     def test_rejects_malformed_management_descriptor(self):
         source = bytes.fromhex('021122334455')

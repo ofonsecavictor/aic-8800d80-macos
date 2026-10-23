@@ -2,13 +2,24 @@ import struct
 import unittest
 
 from native_scan_bridge import (ScanRequest, completion, decode_request,
-                                encode_result, matches_request)
+                                encode_result, matches_request, VERSION)
 
 
 class NativeScanBridgeTests(unittest.TestCase):
+    def test_unselected_scan_uses_only_advertised_passive_channels(self):
+        request = ScanRequest()
+        request.version = VERSION
+        request.sequence = 1
+        request.type = 1
+        frequencies = decode_request(request)['frequencies']
+        self.assertEqual(len(frequencies), 15)
+        self.assertIn(5220, frequencies)
+        self.assertNotIn(5260, frequencies)
+        self.assertNotIn(5745, frequencies)
+
     def test_selected_five_ghz_channel_and_binary_ssid(self):
         request = ScanRequest()
-        request.version = 2
+        request.version = VERSION
         request.sequence = 9
         request.identifier = 12
         request.type = 1
@@ -34,7 +45,7 @@ class NativeScanBridgeTests(unittest.TestCase):
 
     def test_invalid_channel_request_rejected(self):
         request = ScanRequest()
-        request.version = 2
+        request.version = VERSION
         request.sequence = 1
         request.type = 1
         request.channelCount = 1
@@ -49,13 +60,19 @@ class NativeScanBridgeTests(unittest.TestCase):
 
     def test_beacon_result_layout_and_padding(self):
         ies = bytes([0, 3]) + b'AIC' + bytes([3, 1, 44])
+        frame = bytearray(36)
+        frame[0] = 0x80
+        frame[16:22] = bytes.fromhex('021122334455')
+        struct.pack_into('<HH', frame, 32, 100, 0x11)
+        frame = bytes(frame) + ies
         item = {'bssid': '02:11:22:33:44:55', 'frequency': 5220,
                 'rssi': -57, '_beacon': {'interval': 100,
-                                        'capability': 0x11, 'ies': ies}}
+                                        'capability': 0x11, 'ies': ies,
+                                        'frame': frame}}
         result = encode_result(9, item)
         payload = bytes(result.data[:result.length])
         self.assertEqual((result.version, result.sequence, result.length),
-                         (2, 9, 64 + len(ies)))
+                         (5, 9, 64 + len(ies)))
         self.assertEqual(struct.unpack_from('<I', payload, 0)[0], len(ies))
         self.assertEqual(struct.unpack_from('<H', payload, 4)[0], 0xd02c)
         self.assertEqual(payload[6:9], b'AIC')
@@ -64,6 +81,12 @@ class NativeScanBridgeTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from('<i', payload, 48)[0], -57)
         self.assertEqual(payload[64:], ies)
         self.assertFalse(any(result.data[result.length:]))
+        self.assertEqual(result.beaconLength, len(frame))
+        self.assertEqual(bytes(result.beacon[:result.beaconLength]), frame)
+        self.assertFalse(any(result.beacon[result.beaconLength:]))
+        item['_beacon']['frame'] = frame[:-1] + b'X'
+        with self.assertRaises(ValueError):
+            encode_result(9, item)
 
     def test_malformed_beacon_and_completion_rejected(self):
         item = {'bssid': '02:11:22:33:44:55', 'frequency': 5220,

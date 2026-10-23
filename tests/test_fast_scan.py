@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import wifi
 import service
-from layouts import Scan
+from layouts import Scan, me_channel_config_request, me_config_request
 
 
 TARGET = {
@@ -76,6 +76,30 @@ class FastScanTests(unittest.TestCase):
         self.assertTrue(w.published[0][1]['merge_existing'])
         self.assertEqual(len(w.probed), 1)
 
+    def test_configures_vht80_before_starting_firmware(self):
+        w = self.make_wifi()
+        calls = []
+        original_request = w.request
+
+        def request(message_id, payload=b'', confirmation=None):
+            calls.append((message_id, payload))
+            return original_request(message_id, payload, confirmation)
+
+        w.request = request
+        with patch.object(wifi, 'HERE', ReportPath()), \
+             patch.object(wifi, 'network', return_value=TARGET):
+            w.scan(TARGET['ssid'], b'key')
+        ids = [message_id for message_id, _ in calls]
+        self.assertLess(ids.index(0), ids.index(0x1400))
+        self.assertLess(ids.index(0x1400), ids.index(0x1402))
+        self.assertLess(ids.index(0x1402), ids.index(2))
+        self.assertEqual(next(payload for message_id, payload in calls
+                              if message_id == 0x1400),
+                         me_config_request(enable_he=True))
+        self.assertEqual(next(payload for message_id, payload in calls
+                              if message_id == 0x1402),
+                         me_channel_config_request())
+
     def test_falls_back_to_band_scan(self):
         w = self.make_wifi(miss_cached=True)
         with patch.object(wifi, 'HERE', ReportPath()), patch.object(wifi, 'network', return_value=TARGET):
@@ -102,6 +126,23 @@ class FastScanTests(unittest.TestCase):
         self.assertEqual(w.scans, [1])
         self.assertEqual(w.published, [])
         self.assertEqual(len(w.probed), 1)
+
+    def test_cleanup_usb_timeout_does_not_hide_join_failure(self):
+        w = self.make_wifi()
+        w.scan_observer = lambda item: None
+        w.probe = lambda *args: (_ for _ in ()).throw(RuntimeError('native join failed'))
+        original_request = w.request
+
+        def request(message_id, payload=b'', confirmation=None):
+            if message_id == 8:
+                raise RuntimeError('USB write 0008: e0004051')
+            return original_request(message_id, payload, confirmation)
+
+        w.request = request
+        with patch.object(wifi, 'network', return_value=TARGET):
+            with self.assertRaisesRegex(RuntimeError, 'native join failed'):
+                w.scan(TARGET['ssid'], b'k' * 32,
+                       scan_frequencies=(5200,), publish_results=False)
 
     def test_menu_scan_does_not_interrupt_connection(self):
         controller = service.Controller()
@@ -136,6 +177,9 @@ class FastScanTests(unittest.TestCase):
 
             def interrupt(self):
                 self.wake.set()
+
+            def set_native_active(self, _value):
+                pass
 
             def config(self):
                 return {'ssid': '', 'enabled': True}
@@ -190,6 +234,19 @@ class FastScanTests(unittest.TestCase):
         self.assertEqual(saved[0]['ssid'], 'New WPA2 Network')
         self.assertEqual(saved[0]['preferred_band'], 1)
         self.assertEqual(interrupted, [True])
+
+    def test_legacy_menu_cannot_disable_native_mode_by_selecting_a_network(self):
+        controller = service.Controller()
+        controller.set_native_active(True)
+        controller.config = lambda: {'enabled': True, 'native_enabled': True}
+        controller.save = lambda _config: self.fail('native mode changed')
+        controller.interrupt = lambda: self.fail('native session interrupted')
+        with patch.object(service, 'credential') as credential:
+            response = controller.handle({
+                'action': 'select', 'ssid': 'Test Network 5G', 'band': 1,
+            })
+        self.assertFalse(response['ok'])
+        credential.assert_not_called()
 
 
 if __name__ == '__main__':

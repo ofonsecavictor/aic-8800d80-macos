@@ -6,7 +6,10 @@
 // Shared with the future user-space AIC service. Ordinary state/scan messages
 // contain no credentials; the separate one-shot join message contains a PMK.
 enum {
-    kAICNativeBridgeVersion = 2,
+    // v5 transfers short bursts in one IOKit call.  The package upgrades the
+    // kernel endpoint and USB-owning service together, so mixed ABI versions
+    // fail closed during startup.
+    kAICNativeBridgeVersion = 5,
     kAICNativeGetVersion = 0,
     kAICNativePublishRadioState = 1,
     kAICNativeNextCommand = 2,
@@ -19,6 +22,8 @@ enum {
     kAICNativeNextJoin = 9,
     kAICNativeCompleteJoin = 10,
     kAICNativeNextLeave = 11,
+    kAICNativeNextFrameBatch = 12,
+    kAICNativeSubmitFrameBatch = 13,
     kAICNativeSetPower = 1,
     kAICNativeLeave = 2,
     kAICNativeFrameEthernet = 1,
@@ -65,6 +70,8 @@ typedef struct AICNativeScanResult {
     uint32_t sequence;
     uint32_t length;
     uint8_t data[1088]; // 64-byte WCL metadata + at most 1024 IE bytes.
+    uint32_t beaconLength;
+    uint8_t beacon[2048]; // Actual 802.11 beacon; never fabricated from IEs.
 } AICNativeScanResult;
 
 typedef struct AICNativeScanCompletion {
@@ -87,6 +94,7 @@ typedef struct AICNativeJoinRequest {
     uint8_t bssid[6];
     uint8_t pmk[32];
     uint8_t rsn[257];
+    uint8_t stationMac[6];
     uint8_t reserved;
 } AICNativeJoinRequest;
 
@@ -111,15 +119,23 @@ typedef struct AICNativeFrame {
     uint8_t reserved[2];
 } AICNativeFrame;
 
+enum { kAICNativeFrameBatchCapacity = 16 };
+typedef struct AICNativeFrameBatch {
+    uint32_t version;
+    uint32_t count;
+    AICNativeFrame frames[kAICNativeFrameBatchCapacity];
+} AICNativeFrameBatch;
+
 #if defined(__cplusplus)
 static_assert(sizeof(AICNativeRadioState) == 36, "radio state ABI size");
 static_assert(sizeof(AICNativeCommand) == 16, "command ABI size");
 static_assert(sizeof(AICNativeScanRequest) == 96, "scan request ABI size");
-static_assert(sizeof(AICNativeScanResult) == 1100, "scan result ABI size");
+static_assert(sizeof(AICNativeScanResult) == 3152, "scan result ABI size");
 static_assert(sizeof(AICNativeScanCompletion) == 16, "scan completion ABI size");
-static_assert(sizeof(AICNativeJoinRequest) == 348, "join request ABI size");
+static_assert(sizeof(AICNativeJoinRequest) == 356, "join request ABI size");
 static_assert(sizeof(AICNativeJoinCompletion) == 16, "join completion ABI size");
 static_assert(sizeof(AICNativeFrame) == 1540, "frame ABI size");
+static_assert(sizeof(AICNativeFrameBatch) == 24648, "frame batch ABI size");
 
 inline bool AICNativeFrameValid(const AICNativeFrame &frame, bool fromService) {
     if (frame.version != kAICNativeBridgeVersion || !frame.sequence ||
@@ -139,6 +155,19 @@ inline bool AICNativeFrameValid(const AICNativeFrame &frame, bool fromService) {
     if ((control & 0x00ff) != 0x00d0 || (control & 0x4000)) return false;
     if (fromService) return true; // RX may include other action categories.
     return frame.data[24] == 4 || frame.data[24] == 127;
+}
+
+inline bool AICNativeFrameBatchValid(const AICNativeFrameBatch &batch,
+                                     bool fromService) {
+    if (batch.version != kAICNativeBridgeVersion || !batch.count ||
+        batch.count > kAICNativeFrameBatchCapacity) return false;
+    for (uint32_t i = 0; i < batch.count; ++i)
+        if (!AICNativeFrameValid(batch.frames[i], fromService)) return false;
+    for (uint32_t i = batch.count; i < kAICNativeFrameBatchCapacity; ++i)
+        if (batch.frames[i].version || batch.frames[i].kind ||
+            batch.frames[i].sequence || batch.frames[i].vif ||
+            batch.frames[i].channel || batch.frames[i].length) return false;
+    return true;
 }
 
 inline bool AICNativeCommandValid(const AICNativeCommand &command) {
@@ -175,10 +204,14 @@ inline bool AICNativeJoinRequestValid(const AICNativeJoinRequest &request) {
         request.channelSpec != (channel | (channel <= 14 ? 0x1000u : 0xd000u)) ||
         request.rsnLength > 257 || request.reserved ||
         (request.bssid[0] & 1) ||
+        (request.stationMac[0] & 1) ||
         !AICJoinRSNSupported(request.rsn, request.rsnLength)) return false;
-    bool nonzeroBssid = false;
-    for (unsigned i = 0; i < 6; ++i) nonzeroBssid |= request.bssid[i] != 0;
-    if (!nonzeroBssid) return false;
+    bool nonzeroBssid = false, nonzeroStation = false;
+    for (unsigned i = 0; i < 6; ++i) {
+        nonzeroBssid |= request.bssid[i] != 0;
+        nonzeroStation |= request.stationMac[i] != 0;
+    }
+    if (!nonzeroBssid || !nonzeroStation) return false;
     for (uint32_t i = request.ssidLength; i < 32; ++i)
         if (request.ssid[i]) return false;
     for (uint32_t i = request.rsnLength; i < 257; ++i)

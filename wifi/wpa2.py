@@ -134,17 +134,23 @@ class Supplicant:
         self.m3=packet
         return answer(packet,0x030a,bytes(32),self.ptk[:16]),(self.ptk[32:48],gtk)
 
-def ethernet_frames(data):
-    """Convert bounded AIC MPDU records to Ethernet, excluding unsupported cases."""
+def rx_records(data):
+    """Split one USB transfer into bounded AIC RX records."""
     offset=0
     while offset<len(data):
         if len(data)-offset<60:raise ValueError('Truncated AIC RX header')
         size=struct.unpack_from('<H',data,offset)[0]
         end=offset+60+size
         if size<24 or end>len(data):raise ValueError('Truncated AIC MPDU: offset=%u size=%u total=%u header=%s'%(offset,size,len(data),data[offset:offset+16].hex()))
-        status=struct.unpack_from('<I',data,offset+36)[0]
-        flags=struct.unpack_from('<I',data,offset+48)[0]
-        frame=data[offset+60:end];offset=end
+        yield data[offset:end]
+        offset=end
+
+def ethernet_frames(data):
+    """Convert bounded AIC MPDU records to Ethernet, excluding unsupported cases."""
+    for record in rx_records(data):
+        status=struct.unpack_from('<I',record,36)[0]
+        flags=struct.unpack_from('<I',record,48)[0]
+        frame=record[60:]
         if not flags&0x40:continue # flags_upload in hw_rxhdr
         fc=struct.unpack_from('<H',frame)[0]
         # Data from AP, no fragmentation or WDS.
@@ -182,6 +188,13 @@ def transmit_frame(ethernet,vif,station,confirmation=0):
     desc=struct.pack('<HHI',len(payload),0,confirmation)+ethernet[:14]+struct.pack('<4BH',1,0,vif,station,0)
     body=desc+payload
     if confirmation&0x80000000:body+=bytes((-len(body))%4)
+    elif (4+len(body))%512==0:
+        # The Linux USB transport terminates a bulk OUT transfer that ends
+        # exactly on a max-packet boundary (URB_ZERO_PACKET). Our synchronous
+        # userspace pipe has no equivalent flag. A single zero byte is safe
+        # trailing padding for this unconfirmed Ethernet descriptor and makes
+        # the transfer end with a short packet instead.
+        body+=b'\x00'
     return struct.pack('<HBB',4+len(body),1,0)+body
 
 def key_request(vif,station,key,index=0,pairwise=True):

@@ -1,0 +1,40 @@
+AIC 8800D80 — Instalador completo 1.3.4 / Wi-Fi nativo 0.0.18
+
+Corrige a causa identificada dos panics da versão 1.3.3: os descritores de
+memória são preparados antes de readBytes/writeBytes e liberados depois,
+inclusive em cópias incompletas. O driver 0.0.18 foi validado após reinício e
+permaneceu inalterado durante os ajustes finais de velocidade. Não reinstale o
+pacote antigo 1.3.3.
+
+Esta atualização mantém o Wi-Fi nativo e reduz a sobrecarga da ponte de dados:
+até 16 frames Ethernet passam em cada chamada entre o kernel e o serviço AIC,
+em vez de uma chamada por frame. A fila de transmissão também cresce para
+absorver rajadas de download sem descartar pacotes precocemente.
+
+O pacote inclui firmware, carregador USB, serviço Wi-Fi, biblioteca de
+transporte, aplicativo de recuperação e driver nativo. Não exige aplicar
+um patch nem instalar previamente outro pacote.
+
+Uma instalação nativa 0.0.15, 0.0.16 ou 0.0.17 registrada pode ser atualizada após conferir
+os hashes da EFI e do driver e guardar uma cópia de recuperação. Também
+é possível instalar a partir do modo legado. Este pacote permanece
+específico deste computador e exige o pendrive de recuperação verificado.
+
+Corrige o transporte de lotes grandes pela API do IOKit, usa oito leituras USB
+simultâneas, fila de 2.048 registros, drenagem de até 256 registros por ciclo e
+submissão de até 16 frames Ethernet por chamada. A associação em 5 GHz solicita
+operação Wi-Fi 6 em 80 MHz.
+
+Neste Hackintosh, o teste final mediu 190,24 Mbps de download e 29,35 Mbps de
+upload, com zero registros USB malformados e zero descarte da fila. O resultado
+não é garantia para outras redes ou máquinas.
+
+Inclui entrada Ethernet limitada pelo tamanho do protocolo, espera pela
+interface USB nova após reconexão e operação exclusivamente nativa. O app
+AIC deixa de abrir automaticamente; permanece apenas para recuperação.
+
+Reinicie ao concluir e conecte pelo menu Wi-Fi nativo do macOS. O app AIC não
+deve ser usado para a conexão normal.
+
+O pacote é local, específico deste Hackintosh e não possui assinatura
+Developer ID ou notarização Apple.

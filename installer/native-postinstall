@@ -1,0 +1,55 @@
+#!/bin/sh
+# Install the working AIC fallback first, then stage native mode for next boot.
+set -eu
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+support='/Library/Application Support/AIC88M80Driver'
+disable_menu_autostart() {
+    console_uid=$(/usr/bin/stat -f %u /dev/console)
+    if [ "$console_uid" -ge 500 ]; then
+        /bin/launchctl disable "gui/$console_uid/local.victor.AICWiFiMenu"
+        /bin/launchctl bootout "gui/$console_uid/local.victor.AICWiFiMenu" >/dev/null 2>&1 || true
+        console_user=$(/usr/bin/stat -f %Su /dev/console)
+        /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" \
+            /usr/bin/osascript -e 'tell application "System Events" to delete every login item whose name is "AIC Wi-Fi"'
+        /usr/bin/pkill -u "$console_uid" -f '^/Applications/AIC Wi-Fi.app/Contents/MacOS/AIC Wi-Fi$' >/dev/null 2>&1 || true
+    fi
+}
+if [ -f "$support/native-release.json" ]; then
+    installed_version=$(/usr/bin/python3 - <<'PY'
+import json
+from pathlib import Path
+print(json.loads(Path('/Library/Application Support/AIC88M80Driver/native-release.json').read_text()).get('version', ''))
+PY
+)
+    if [ "$installed_version" = 0.0.15 ] || [ "$installed_version" = 0.0.16 ] || [ "$installed_version" = 0.0.17 ]; then
+        /usr/bin/python3 "$support/NativeMode/native_upgrade.py" \
+            "$support/NativeMode/AICNativeProbe.kext"
+    else
+        /usr/bin/python3 "$support/NativeMode/native_release.py" --verify
+    fi
+    disable_menu_autostart
+    /bin/launchctl kickstart -k system/local.victor.AIC88M80WiFi
+    echo 'Serviço nativo atualizado; app AIC permanece instalado, mas não abre no login.'
+    exit 0
+fi
+# A previously staged 0.0.15 test must be removed before the release writer
+# can make its own backup and entry. The rollback script accepts only the
+# exact test config/bundle, and fails closed on any other EFI state.
+efi_info=$(/usr/sbin/diskutil info -plist disk0s4)
+efi_mount=$(printf '%s\n' "$efi_info" | /usr/bin/plutil -extract MountPoint raw -)
+if [ -z "$efi_mount" ]; then
+    /usr/sbin/diskutil mount disk0s4 >/dev/null
+    efi_info=$(/usr/sbin/diskutil info -plist disk0s4)
+    efi_mount=$(printf '%s\n' "$efi_info" | /usr/bin/plutil -extract MountPoint raw -)
+fi
+[ -n "$efi_mount" ] || { echo 'EFI interna não foi montada.' >&2; exit 1; }
+if [ -e "$efi_mount/EFI/OC/Kexts/AICNativeProbe.kext" ]; then
+    /bin/sh "$support/NativeMode/rollback_native_efi_test.sh"
+fi
+/bin/sh "$script_dir/postinstall-legacy"
+/usr/bin/python3 "$support/NativeMode/native_release.py" --install \
+    "$support/NativeMode/AICNativeProbe.kext"
+disable_menu_autostart
+/usr/sbin/chown root:wheel '/Applications/Voltar ao AIC.command'
+/bin/chmod 755 '/Applications/Voltar ao AIC.command'
+echo 'Wi-Fi nativo preparado para o próximo reinício; reversão em Aplicativos/Voltar ao AIC.command.'

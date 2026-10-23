@@ -6,7 +6,7 @@ from layouts import channel_to_frequency
 from wpa2 import validate_rsn
 
 
-VERSION = 2
+VERSION = 5
 
 
 class JoinRequest(c.Structure):
@@ -14,7 +14,8 @@ class JoinRequest(c.Structure):
                 ('ssidLength', c.c_uint32), ('channelSpec', c.c_uint32),
                 ('rsnLength', c.c_uint32), ('ssid', c.c_uint8 * 32),
                 ('bssid', c.c_uint8 * 6), ('pmk', c.c_uint8 * 32),
-                ('rsn', c.c_uint8 * 257), ('reserved', c.c_uint8)]
+                ('rsn', c.c_uint8 * 257),
+                ('stationMac', c.c_uint8 * 6), ('reserved', c.c_uint8)]
 
 
 class JoinCompletion(c.Structure):
@@ -22,7 +23,7 @@ class JoinCompletion(c.Structure):
                 ('status', c.c_uint32), ('reserved', c.c_uint32)]
 
 
-assert c.sizeof(JoinRequest) == 348
+assert c.sizeof(JoinRequest) == 356
 assert c.sizeof(JoinCompletion) == 16
 
 
@@ -38,6 +39,9 @@ def decode_join_request(request):
         bssid = bytes(request.bssid)
         if not any(bssid) or bssid[0] & 1:
             raise ValueError('Invalid native AIC BSSID')
+        station_mac = bytes(request.stationMac)
+        if not any(station_mac) or station_mac[0] & 1:
+            raise ValueError('Invalid native AIC station address')
         channel = request.channelSpec & 0xff
         band = 0 if channel <= 14 else 1
         if (not 1 <= channel <= 196 or
@@ -54,6 +58,7 @@ def decode_join_request(request):
         return {'sequence': request.sequence,
                 'ssid': bytes(request.ssid[:request.ssidLength]).decode('utf-8'),
                 'bssid': bssid.hex(':'), 'frequency': frequency,
+                'station_mac': station_mac,
                 'key': bytes(request.pmk), 'rsn': rsn}
     finally:
         c.memset(c.addressof(request), 0, c.sizeof(request))

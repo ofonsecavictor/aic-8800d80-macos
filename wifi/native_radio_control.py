@@ -1,5 +1,7 @@
 """Experimental IO80211 state/power bridge; never owns the USB device."""
 import ctypes as c
+import re
+import subprocess
 
 from layouts import frequency_to_channel
 from native_scan_bridge import (ScanRequest, completion as scan_completion,
@@ -8,7 +10,7 @@ from native_scan_bridge import (ScanRequest, completion as scan_completion,
 from native_join_bridge import (JoinRequest, decode_join_request,
                                 join_completion)
 
-VERSION = 2
+VERSION = 5
 NOT_FOUND = 0
 NOT_READY = 0xe00002d8
 SET_POWER = 1
@@ -49,6 +51,17 @@ class Frame(c.Structure):
 assert c.sizeof(Frame) == 1540
 
 
+FRAME_BATCH_CAPACITY = 16
+
+
+class FrameBatch(c.Structure):
+    _fields_ = [('version', c.c_uint32), ('count', c.c_uint32),
+                ('frames', Frame * FRAME_BATCH_CAPACITY)]
+
+
+assert c.sizeof(FrameBatch) == 24648
+
+
 def validate_frame(frame, from_service):
     if (frame.version != VERSION or not frame.sequence or
             any(frame.reserved) or
@@ -71,6 +84,18 @@ def validate_frame(frame, from_service):
         raise ValueError('Invalid AIC frame kind')
 
 
+def validate_frame_batch(batch, from_service):
+    if (batch.version != VERSION or not 1 <= batch.count <= FRAME_BATCH_CAPACITY):
+        raise ValueError('Invalid AIC frame batch header')
+    for index in range(batch.count):
+        validate_frame(batch.frames[index], from_service)
+    for index in range(batch.count, FRAME_BATCH_CAPACITY):
+        frame = batch.frames[index]
+        if any((frame.version, frame.kind, frame.sequence, frame.vif,
+                frame.channel, frame.length)):
+            raise ValueError('Invalid AIC frame batch padding')
+
+
 def frame_for_service_rx(kind, payload, sequence, vif, channel=0):
     if not isinstance(payload, bytes) or len(payload) > 1514:
         raise ValueError('Invalid AIC native frame payload')
@@ -81,7 +106,12 @@ def frame_for_service_rx(kind, payload, sequence, vif, channel=0):
     frame.vif = vif
     frame.channel = channel
     frame.length = len(payload)
-    frame.data[:len(payload)] = payload
+    # ctypes array slice assignment converts every byte through Python.  On
+    # full-size Ethernet ingress that consumed most of one CPU core.  The
+    # freshly zeroed structure already provides the required zero padding, so
+    # copy the validated bytes directly into its fixed-size payload field.
+    if payload:
+        c.memmove(c.addressof(frame) + Frame.data.offset, payload, len(payload))
     validate_frame(frame, from_service=True)
     return frame
 
@@ -127,6 +157,70 @@ def state_for(powered, target, mac):
     return state
 
 
+def latest_controller_service(io, matching):
+    """Retain the newest live USB controller, not a detached hot-plug ghost."""
+    iterator = c.c_uint32()
+    status = io.IOServiceGetMatchingServices(0, matching, c.byref(iterator))
+    if status:
+        raise RuntimeError('AIC native controller enumeration: %08x' % status)
+    selected = 0
+    selected_id = -1
+    try:
+        while True:
+            service = io.IOIteratorNext(iterator.value)
+            if not service:
+                break
+            entry_id = c.c_uint64()
+            status = io.IORegistryEntryGetRegistryEntryID(service,
+                                                          c.byref(entry_id))
+            if status:
+                io.IOObjectRelease(service)
+                continue
+            if entry_id.value > selected_id:
+                if selected:
+                    io.IOObjectRelease(selected)
+                selected = service
+                selected_id = entry_id.value
+            else:
+                io.IOObjectRelease(service)
+        return selected
+    except BaseException:
+        if selected:
+            io.IOObjectRelease(selected)
+        raise
+    finally:
+        if iterator.value:
+            io.IOObjectRelease(iterator.value)
+
+
+def native_interface_name():
+    """Find the BSD interface under the newest AIC USB provider."""
+    result = subprocess.run(
+        ['/usr/sbin/ioreg', '-r', '-c', 'AICNativeUSBProvider', '-w0'],
+        text=True, capture_output=True, timeout=4)
+    if result.returncode:
+        return None
+    provider_id = None
+    newest_provider_id = None
+    interfaces = []
+    for line in result.stdout.splitlines():
+        provider = re.search(
+            r'^\+-o AICNativeUSBProvider\s+<class [^,]+, id 0x([0-9a-fA-F]+)',
+            line)
+        if provider:
+            provider_id = int(provider.group(1), 16)
+            newest_provider_id = max(newest_provider_id or 0, provider_id)
+        interface = re.search(
+            r'\+-o (en([0-9]+))\s+<class AICNativeEthernetInterface,', line)
+        if interface and provider_id is not None:
+            interfaces.append((provider_id, int(interface.group(2)),
+                               interface.group(1)))
+    # During hotplug the new provider can exist before its BSD interface.
+    # Never power the old provider's stale enX while waiting for the new one.
+    current = [item for item in interfaces if item[0] == newest_provider_id]
+    return max(current)[2] if current else None
+
+
 class NativeRadioPublisher:
     def __init__(self, library, connect):
         self.library = library
@@ -137,8 +231,14 @@ class NativeRadioPublisher:
         io = c.CDLL('/System/Library/Frameworks/IOKit.framework/IOKit')
         io.IOServiceMatching.argtypes = [c.c_char_p]
         io.IOServiceMatching.restype = c.c_void_p
-        io.IOServiceGetMatchingService.argtypes = [c.c_uint32, c.c_void_p]
-        io.IOServiceGetMatchingService.restype = c.c_uint32
+        io.IOServiceGetMatchingServices.argtypes = [c.c_uint32, c.c_void_p,
+                                                    c.POINTER(c.c_uint32)]
+        io.IOServiceGetMatchingServices.restype = c.c_uint32
+        io.IOIteratorNext.argtypes = [c.c_uint32]
+        io.IOIteratorNext.restype = c.c_uint32
+        io.IORegistryEntryGetRegistryEntryID.argtypes = [c.c_uint32,
+                                                         c.POINTER(c.c_uint64)]
+        io.IORegistryEntryGetRegistryEntryID.restype = c.c_uint32
         io.IOServiceOpen.argtypes = [c.c_uint32, c.c_uint32, c.c_uint32,
                                      c.POINTER(c.c_uint32)]
         io.IOServiceOpen.restype = c.c_uint32
@@ -156,7 +256,7 @@ class NativeRadioPublisher:
         match = io.IOServiceMatching(b'AICAirPortController')
         if not match:
             raise RuntimeError('IOServiceMatching failed for AIC controller')
-        service = io.IOServiceGetMatchingService(0, match)  # consumes match
+        service = latest_controller_service(io, match)  # consumes match
         if service == NOT_FOUND:
             return None
         try:
@@ -175,7 +275,9 @@ class NativeRadioPublisher:
             status = io.IOConnectCallScalarMethod(connect.value, 0, None, 0,
                                                   output, c.byref(count))
             if status or count.value != 1 or output[0] != VERSION:
-                raise RuntimeError('AIC native control ABI mismatch: %08x' % status)
+                raise RuntimeError(
+                    'AIC native control ABI mismatch: status=%08x expected=%u actual=%u count=%u'
+                    % (status, VERSION, output[0], count.value))
             return publisher
         except Exception:
             publisher.close()
@@ -223,6 +325,81 @@ class NativeRadioPublisher:
         if status:
             raise RuntimeError('AIC native receive submit: %08x' % status)
 
+    def submit_received_frames(self, frames):
+        frames = tuple(frames)
+        if not frames:
+            return
+        if len(frames) > FRAME_BATCH_CAPACITY:
+            for start in range(0, len(frames), FRAME_BATCH_CAPACITY):
+                self.submit_received_frames(frames[start:start + FRAME_BATCH_CAPACITY])
+            return
+        if not self.connect:
+            raise RuntimeError('AIC native control is closed')
+        if getattr(self, '_rx_single_frames', False):
+            for frame in frames:
+                self.submit_received_frame(frame)
+            return
+        batch = FrameBatch()
+        batch.version = VERSION
+        batch.count = len(frames)
+        for index, frame in enumerate(frames):
+            validate_frame(frame, from_service=True)
+            batch.frames[index] = frame
+        validate_frame_batch(batch, from_service=True)
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 13, c.byref(batch), c.sizeof(batch), None, None)
+        if status in (0xe00002c2, 0xe00002c7):
+            self._rx_single_frames = True
+            for frame in frames:
+                self.submit_received_frame(frame)
+            return
+        if status:
+            raise RuntimeError('AIC native receive batch submit: %08x' % status)
+
+    def submit_received_ethernet(self, packets):
+        """Submit trusted, normalized Ethernet bytes without a duplicate Frame copy."""
+        packets = tuple(packets)
+        if not packets:
+            return
+        if len(packets) > FRAME_BATCH_CAPACITY:
+            for start in range(0, len(packets), FRAME_BATCH_CAPACITY):
+                self.submit_received_ethernet(
+                    packets[start:start + FRAME_BATCH_CAPACITY])
+            return
+        if not self.connect:
+            raise RuntimeError('AIC native control is closed')
+        if getattr(self, '_rx_single_frames', False):
+            for payload, sequence in packets:
+                self.submit_received_frame(frame_for_service_rx(
+                    ETHERNET_FRAME, payload, sequence, 0))
+            return
+        batch = FrameBatch()
+        batch.version = VERSION
+        batch.count = len(packets)
+        for index, (payload, sequence) in enumerate(packets):
+            if (not isinstance(payload, bytes) or not 14 <= len(payload) <= 1514 or
+                    not isinstance(sequence, int) or not 1 <= sequence <= 0xffffffff):
+                raise ValueError('Invalid AIC Ethernet ingress packet')
+            frame = batch.frames[index]
+            frame.version = VERSION
+            frame.kind = ETHERNET_FRAME
+            frame.sequence = sequence
+            frame.length = len(payload)
+            c.memmove(c.addressof(batch) + FrameBatch.frames.offset +
+                      index * c.sizeof(Frame) + Frame.data.offset,
+                      payload, len(payload))
+        validate_frame_batch(batch, from_service=True)
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 13, c.byref(batch), c.sizeof(batch), None, None)
+        if status in (0xe00002c2, 0xe00002c7):
+            self._rx_single_frames = True
+            for payload, sequence in packets:
+                self.submit_received_frame(frame_for_service_rx(
+                    ETHERNET_FRAME, payload, sequence, 0))
+            return
+        if status:
+            raise RuntimeError('AIC native receive batch submit: %08x' % status)
+
     def next_transmit_frame(self):
         if not self.connect:
             return None
@@ -236,6 +413,31 @@ class NativeRadioPublisher:
             raise RuntimeError('AIC native transmit read: %08x' % status)
         validate_frame(frame, from_service=False)
         return frame
+
+    def next_transmit_frames(self):
+        if not self.connect:
+            return ()
+        if getattr(self, '_tx_single_frames', False):
+            frames = []
+            for _ in range(FRAME_BATCH_CAPACITY):
+                frame = self.next_transmit_frame()
+                if frame is None:
+                    break
+                frames.append(frame)
+            return tuple(frames)
+        batch = FrameBatch()
+        size = c.c_size_t(c.sizeof(batch))
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 12, None, 0, c.byref(batch), c.byref(size))
+        if status in (0xe00002c2, 0xe00002c7):
+            self._tx_single_frames = True
+            return self.next_transmit_frames()
+        if status == NOT_READY:
+            return ()
+        if status or size.value != c.sizeof(batch):
+            raise RuntimeError('AIC native transmit batch read: %08x' % status)
+        validate_frame_batch(batch, from_service=False)
+        return tuple(batch.frames[index] for index in range(batch.count))
 
     def enable_scan_bridge(self):
         if not self.connect:

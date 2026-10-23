@@ -5,9 +5,11 @@
 // A bounded in-memory handoff. Caller holds the controller's state lock.
 // No frame is persisted; a full queue rejects new frames rather than silently
 // replacing a packet that the other side has not consumed.
-class AICNativeFrameMailbox {
+template <unsigned Capacity>
+class AICNativeFrameMailboxSized {
 public:
-    static constexpr unsigned kCapacity = 8;
+    static_assert(Capacity > 0 && Capacity <= 256, "bounded frame mailbox");
+    static constexpr unsigned kCapacity = Capacity;
 
     bool push(const AICNativeFrame &frame, bool fromService) {
         if (!AICNativeFrameValid(frame, fromService) || count == kCapacity)
@@ -28,6 +30,7 @@ public:
     }
 
     unsigned size() const { return count; }
+    unsigned available() const { return Capacity - count; }
 
     void clear() {
         for (unsigned i = 0; i < kCapacity; ++i) frames[i] = {};
@@ -40,3 +43,8 @@ private:
     unsigned tail = 0;
     unsigned count = 0;
 };
+
+// Only outbound BSD traffic needs room for the bursts produced by browsers.
+// Keep the inbound control/action-frame queue small.
+using AICNativeFrameMailbox = AICNativeFrameMailboxSized<8>;
+using AICNativeTransmitMailbox = AICNativeFrameMailboxSized<256>;

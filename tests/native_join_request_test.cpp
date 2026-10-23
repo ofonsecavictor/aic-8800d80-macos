@@ -48,8 +48,12 @@ int main() {
     put32(raw + 0x1c, 4);
     put32(raw + 0x14, 1u << 12); // WPA3-SAE unsupported.
     assert(!AICDecodeWCLJoinRequest(raw, sizeof(raw), result));
+    put32(raw + 0x14, (1u << 3) | (1u << 12)); // Transition with PSK.
+    assert(AICDecodeWCLJoinRequest(raw, sizeof(raw), result));
     put32(raw + 0x14, 1u << 3);
-    put32(raw + 0x48, 7); // PMKSA not this flow.
+    put32(raw + 0x48, 7); // Saved macOS credential may be a PMKSA.
+    assert(AICDecodeWCLJoinRequest(raw, sizeof(raw), result));
+    put32(raw + 0x48, 9); // Enterprise MSK stays unsupported.
     assert(!AICDecodeWCLJoinRequest(raw, sizeof(raw), result));
     put32(raw + 0x48, 6);
     raw[0xd6 + 7] = 2; // TKIP group cipher.

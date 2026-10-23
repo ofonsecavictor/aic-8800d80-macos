@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let message: String?
         let needs_password: Bool?
         let enabled: Bool?
+        let native_mode: Bool?
         let connected: Bool?
         let dongle_present: Bool?
         let connected_ssid: String?
@@ -131,7 +132,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.popover.isShown && !self.passwordPromptOpen { self.rebuildPanel() }
                 if self.scanOnOpenPending {
                     self.scanOnOpenPending = false
-                    if status?.enabled == true && status?.dongle_present == true {
+                    if status?.enabled == true && status?.dongle_present == true &&
+                        status?.native_mode != true {
                         self.requestScan()
                     }
                 }
@@ -141,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusIcon() {
         let available = serviceStatus?.ok == true
+        let nativeMode = serviceStatus?.native_mode == true
         let enabled = serviceStatus?.enabled == true
         let connected = serviceStatus?.connected == true
         let present = serviceStatus?.dongle_present == true
@@ -153,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "Wi-Fi")
         }
         statusItem.button?.appearsDisabled = !available || !present
-        statusItem.button?.toolTip = !present ? "Adaptador Wi-Fi não conectado" :
+        statusItem.button?.toolTip = nativeMode ? "Use o Wi-Fi do macOS" : !present ? "Adaptador Wi-Fi não conectado" :
             (connected ? "Wi-Fi conectado" : (enabled ? "Wi-Fi conectando" : "Wi-Fi desativado"))
     }
 
@@ -267,7 +270,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let header = NSStackView()
         header.orientation = .horizontal
         header.alignment = .centerY
-        let title = label("Wi-Fi", size: 15, weight: .semibold)
+        let title = label(serviceStatus?.native_mode == true ? "AIC (reserva)" : "Wi-Fi",
+            size: 15, weight: .semibold)
         let toggle = NSSwitch()
         toggle.state = serviceStatus?.enabled == true ? .on : .off
         toggle.isEnabled = serviceStatus?.ok == true
@@ -283,6 +287,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard serviceStatus?.ok == true else {
             stack.addArrangedSubview(label("O serviço Wi-Fi não está disponível.", size: 13, weight: .regular, color: .secondaryLabelColor))
+            installPanel(root, stack: stack)
+            return
+        }
+        if serviceStatus?.native_mode == true {
+            stack.addArrangedSubview(label("Wi-Fi nativo independente. Use o menu do macOS para ligar, buscar redes e conectar.",
+                size: 13, weight: .regular, color: .secondaryLabelColor))
             installPanel(root, stack: stack)
             return
         }
@@ -387,6 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestScan() {
+        guard serviceStatus?.native_mode != true else { return }
         guard !busy else { return }
         scanNotice = nil
         scanStartedAt = Date().timeIntervalSince1970
@@ -460,7 +471,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let fallback = ControlResponse(ok: false, message: "Serviço Wi-Fi indisponível.",
-                needs_password: nil, enabled: nil, connected: nil, dongle_present: nil,
+                needs_password: nil, enabled: nil, native_mode: nil,
+                connected: nil, dongle_present: nil,
                 connected_ssid: nil, connected_band: nil, scan_deferred: nil)
             let response = self.control(request) ?? fallback
             DispatchQueue.main.async {

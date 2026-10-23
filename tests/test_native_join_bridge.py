@@ -1,6 +1,7 @@
 import unittest
 
-from native_join_bridge import JoinRequest, decode_join_request, join_completion
+from native_join_bridge import (JoinRequest, VERSION, decode_join_request,
+                                join_completion)
 from native_radio_control import NativeRadioPublisher, NOT_READY
 from test_native_radio_control import FakeIOKit
 
@@ -10,12 +11,13 @@ RSN = bytes.fromhex('30140100000fac040100000fac040100000fac020000')
 
 def request():
     item = JoinRequest()
-    item.version = 2
+    item.version = VERSION
     item.sequence = 7
     item.ssidLength = 4
     item.ssid[:4] = b'test'
     item.channelSpec = 0xd02c
     item.bssid[:] = bytes.fromhex('021122334455')
+    item.stationMac[:] = bytes.fromhex('061122334455')
     item.pmk[:] = bytes([0xa5]) * 32  # Synthetic, never a real credential.
     item.rsnLength = len(RSN)
     item.rsn[:len(RSN)] = RSN
@@ -29,6 +31,7 @@ class NativeJoinBridgeTests(unittest.TestCase):
         self.assertEqual((result['sequence'], result['ssid'],
                           result['frequency']), (7, 'test', 5220))
         self.assertEqual(result['bssid'], '02:11:22:33:44:55')
+        self.assertEqual(result['station_mac'], bytes.fromhex('061122334455'))
         self.assertEqual(result['key'], bytes([0xa5]) * 32)
         self.assertEqual(result['rsn'], RSN)
         self.assertFalse(any(bytes(raw)))
@@ -44,6 +47,11 @@ class NativeJoinBridgeTests(unittest.TestCase):
             self.assertFalse(any(bytes(raw)))
         raw = request()
         raw.bssid[0] = 3
+        with self.assertRaises(ValueError):
+            decode_join_request(raw)
+        self.assertFalse(any(bytes(raw)))
+        raw = request()
+        raw.stationMac[0] = 7
         with self.assertRaises(ValueError):
             decode_join_request(raw)
         self.assertFalse(any(bytes(raw)))

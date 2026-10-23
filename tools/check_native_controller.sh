@@ -3,12 +3,27 @@
 set -eu
 
 if [ "$#" -lt 2 ] || [ "$#" -gt 3 ] ||
-    { [ "$#" -eq 3 ] && [ "$3" != '--diagnose' ]; } ||
+    { [ "$#" -eq 3 ] && [ "$3" != '--diagnose' ] &&
+      [ "$3" != '--stage-load-only' ] &&
+      [ "$3" != '--stage-usb-test' ]; } ||
     [ ! -f "$1/macOS15/IO80211ControllerV2.h" ] ||
     [ ! -f "$1/apple_private_spi.h" ] || [ ! -f "$2/IOKit/IOService.h" ] ||
     [ ! -f "$(dirname "$2")/Library/x86_64/libkmod.a" ]; then
-    echo 'Uso: sh tools/check_native_controller.sh /caminho/itlwm-Sequoia/include/Airport /caminho/MacKernelSDK/Headers [--diagnose]' >&2
+    echo 'Uso: sh tools/check_native_controller.sh /caminho/itlwm-Sequoia/include/Airport /caminho/MacKernelSDK/Headers [--diagnose|--stage-load-only|--stage-usb-test]' >&2
     exit 2
+fi
+if [ "$#" -eq 3 ] && [ "$(/usr/bin/id -u)" -ne 0 ]; then
+    echo 'O diagnóstico kmutil exige pacote temporário root:wheel. Execute a checagem com sudo; nada será instalado ou carregado.' >&2
+    exit 2
+fi
+keep_native=0
+stage_load_only=0
+stage_usb_test=0
+if [ "$#" -eq 3 ] && [ "$3" = '--stage-load-only' ]; then
+    stage_load_only=1
+fi
+if [ "$#" -eq 3 ] && [ "$3" = '--stage-usb-test' ]; then
+    stage_usb_test=1
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -28,10 +43,13 @@ cleanup() {
     /bin/rm -f "$stage/AICNativeEthernetInterface.o"
     /bin/rm -f "$stage/AICProbe" "$stage/AICHeadlessProbe" "$stage/AICNativeRegistrationProbe" "$stage/undefined.txt"
     /bin/rm -f "$stage/native_bridge_protocol_test"
+    /bin/rm -f "$stage/native_batch_transfer_test"
     /bin/rm -f "$stage/native_scan_request_test"
     /bin/rm -f "$stage/native_join_request_test"
     /bin/rm -f "$stage/native_join_mailbox_test"
     /bin/rm -f "$stage/native_wcl_beacon_test"
+    /bin/rm -f "$stage/native_wcl_bss_cache_test"
+    /bin/rm -f "$stage/native_wcl_extended_bss_test"
     /bin/rm -f "$stage/native_scan_mailbox_test"
     /bin/rm -f "$stage/native_wcl_hardware_address_test"
     /bin/rm -f "$stage/native_startup_policy_test"
@@ -42,6 +60,13 @@ cleanup() {
     /bin/rmdir "$stage/AICNativeProbe.kext/Contents/MacOS" 2>/dev/null || true
     /bin/rmdir "$stage/AICNativeProbe.kext/Contents" 2>/dev/null || true
     /bin/rmdir "$stage/AICNativeProbe.kext" 2>/dev/null || true
+    if [ "$keep_native" -eq 0 ]; then
+        /bin/rm -f "$stage/AICNativeRegistrationProbe.kext/Contents/MacOS/AICNativeProbe"
+        /bin/rm -f "$stage/AICNativeRegistrationProbe.kext/Contents/Info.plist"
+        /bin/rmdir "$stage/AICNativeRegistrationProbe.kext/Contents/MacOS" 2>/dev/null || true
+        /bin/rmdir "$stage/AICNativeRegistrationProbe.kext/Contents" 2>/dev/null || true
+        /bin/rmdir "$stage/AICNativeRegistrationProbe.kext" 2>/dev/null || true
+    fi
     /bin/rmdir "$stage" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -51,6 +76,11 @@ trap cleanup EXIT
     "$repo_dir/tests/native_bridge_protocol_test.cpp"
 "$stage/native_bridge_protocol_test"
 echo 'Contrato de estado e comando de energia: testes locais OK.'
+/usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
+    -o "$stage/native_batch_transfer_test" \
+    "$repo_dir/tests/native_batch_transfer_test.cpp"
+"$stage/native_batch_transfer_test"
+echo 'Transferência inline e por descritores de memória: testes locais OK.'
 /usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
     -o "$stage/native_startup_policy_test" \
     "$repo_dir/tests/native_startup_policy_test.cpp"
@@ -76,6 +106,16 @@ echo 'Handoff de conexão WPA2: testes locais OK.'
     "$repo_dir/tests/native_wcl_beacon_test.cpp"
 "$stage/native_wcl_beacon_test"
 echo 'Formato WCL de resultado de varredura: testes locais OK.'
+/usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
+    -o "$stage/native_wcl_bss_cache_test" \
+    "$repo_dir/tests/native_wcl_bss_cache_test.cpp"
+"$stage/native_wcl_bss_cache_test"
+echo 'Resposta WCL de rede conectada: testes locais OK.'
+/usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
+    -o "$stage/native_wcl_extended_bss_test" \
+    "$repo_dir/tests/native_wcl_extended_bss_test.cpp"
+"$stage/native_wcl_extended_bss_test"
+echo 'Detalhes WCL da rede conectada: testes locais OK.'
 /usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
     -o "$stage/native_scan_mailbox_test" \
     "$repo_dir/tests/native_scan_mailbox_test.cpp"
@@ -108,8 +148,8 @@ echo 'Endereço MAC WCL nativo: teste local OK.'
     -I"$(dirname "$1")" -I"$1" -I"$2" -I"$kernel_headers" \
     "$repo_dir/native/AICAirPortController.cpp"
 /usr/bin/file "$stage/AICAirPortController-headless.o"
-# Compile registration in a separate, never-packaged object. It is not a
-# runtime test and must not change the disabled-match bundle below.
+# Compile registration in a separate object. An offline-only, disabled-match
+# bundle below permits diagnostics of these exact bytes, never installation.
 /usr/bin/xcrun clang++ -std=c++14 -fno-exceptions -fno-rtti -fapple-kext \
     -mkernel -c -o "$stage/AICAirPortController-native.o" \
     -Wno-deprecated-declarations -Wno-invalid-offsetof \
@@ -202,8 +242,47 @@ if ! /usr/bin/xcrun nm -g "$bundle/Contents/MacOS/AICNativeProbe" |
     exit 1
 fi
 echo 'Pacote temporário estruturado; coleção, carregamento e Wi-Fi não verificados.'
+native_bundle="$stage/AICNativeRegistrationProbe.kext"
+/bin/mkdir -p "$native_bundle/Contents/MacOS"
+/bin/cp "$stage/AICNativeRegistrationProbe" "$native_bundle/Contents/MacOS/AICNativeProbe"
+/bin/chmod 755 "$native_bundle/Contents/MacOS/AICNativeProbe"
+if [ "$stage_usb_test" -eq 1 ]; then
+    /bin/cp "$repo_dir/native/AICNativeProbe-USBTest-Info.plist" "$native_bundle/Contents/Info.plist"
+else
+    /bin/cp "$repo_dir/native/AICNativeProbe-Info.plist" "$native_bundle/Contents/Info.plist"
+fi
+/usr/bin/plutil -lint "$native_bundle/Contents/Info.plist"
+if ! /usr/bin/xcrun nm -g "$native_bundle/Contents/MacOS/AICNativeProbe" |
+    /usr/bin/awk '$3 == "_kmod_info" {found = 1} END {exit !found}'; then
+    echo 'Variante nativa inválida: símbolo kmod_info ausente.' >&2
+    exit 1
+fi
+if [ "$stage_usb_test" -eq 1 ]; then
+    echo 'Variante nativa temporária preparada para match USB; nada instalado.'
+else
+    echo 'Variante nativa temporária estruturada com match desativado; nada instalado.'
+fi
 if [ "$#" -eq 3 ]; then
-    if ! /usr/bin/kmutil print-diagnostics -Z -z -p "$bundle" > "$stage/diagnostics.txt" 2>&1; then
+    if [ "$stage_usb_test" -eq 0 ]; then
+        match=$(/usr/libexec/PlistBuddy -c "Print :IOKitPersonalities:'Disabled Native Probe':IOResourceMatch" "$native_bundle/Contents/Info.plist")
+        provider=$(/usr/libexec/PlistBuddy -c "Print :IOKitPersonalities:'Disabled Native Probe':IOProviderClass" "$native_bundle/Contents/Info.plist")
+        if [ "$match" != 'local.victor.AICNativeProbe.NoAutoMatch' ] ||
+            [ "$provider" != 'IOResources' ]; then
+            echo 'Match automático inesperado; recusando diagnóstico/carga.' >&2
+            exit 1
+        fi
+    else
+        usb_provider=$(/usr/libexec/PlistBuddy -c "Print :IOKitPersonalities:'AIC 8800D80 WLAN Provider TEST ONLY':IOProviderClass" "$native_bundle/Contents/Info.plist")
+        wifi_number=$(/usr/libexec/PlistBuddy -c "Print :IOKitPersonalities:'AIC 8800D80 WLAN Provider TEST ONLY':bInterfaceNumber" "$native_bundle/Contents/Info.plist")
+        controller_provider=$(/usr/libexec/PlistBuddy -c "Print :IOKitPersonalities:'AIC Native Controller TEST ONLY':IOProviderClass" "$native_bundle/Contents/Info.plist")
+        if [ "$usb_provider" != IOUSBHostInterface ] ||
+            [ "$wifi_number" != 2 ] ||
+            [ "$controller_provider" != AICNativeUSBProvider ]; then
+            echo 'Personalidade USB de teste inesperada; recusando.' >&2
+            exit 1
+        fi
+    fi
+    if ! /usr/bin/kmutil print-diagnostics -Z -z -p "$native_bundle" > "$stage/diagnostics.txt" 2>&1; then
         /bin/cat "$stage/diagnostics.txt"
         echo 'Diagnóstico do kext falhou; não carregar este pacote.' >&2
         exit 1
@@ -212,5 +291,15 @@ if [ "$#" -eq 3 ]; then
     if /usr/bin/grep -Eq '^Error:|^[[:space:]]+Filesystem error:' "$stage/diagnostics.txt"; then
         echo 'Diagnóstico do kext falhou; não carregar este pacote.' >&2
         exit 1
+    fi
+    if [ "$stage_load_only" -eq 1 ] || [ "$stage_usb_test" -eq 1 ]; then
+        keep_native=1
+        if [ "$stage_usb_test" -eq 1 ]; then
+            echo "USB_TEST_BUNDLE=$native_bundle"
+            echo 'Pacote USB de teste preservado; nada instalado ou carregado.'
+        else
+            echo "LOAD_ONLY_BUNDLE=$native_bundle"
+            echo 'Pacote temporário preservado apenas para carga sem match; nada instalado ou carregado.'
+        fi
     fi
 fi

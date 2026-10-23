@@ -7,10 +7,12 @@ handoff is enabled only after a native interface is safely registered.
 import ctypes as c
 import struct
 
-from layouts import CHANNELS_24GHZ, CHANNELS_5GHZ, channel_to_frequency, frequency_to_channel
+from layouts import (NATIVE_PASSIVE_CHANNELS_24GHZ,
+                     NATIVE_PASSIVE_CHANNELS_5GHZ,
+                     channel_to_frequency, frequency_to_channel)
 
 
-VERSION = 2
+VERSION = 5
 MAX_IES = 1024
 
 
@@ -25,7 +27,8 @@ class ScanRequest(c.Structure):
 
 class ScanResult(c.Structure):
     _fields_ = [('version', c.c_uint32), ('sequence', c.c_uint32),
-                ('length', c.c_uint32), ('data', c.c_uint8 * 1088)]
+                ('length', c.c_uint32), ('data', c.c_uint8 * 1088),
+                ('beaconLength', c.c_uint32), ('beacon', c.c_uint8 * 2048)]
 
 
 class ScanCompletion(c.Structure):
@@ -34,7 +37,7 @@ class ScanCompletion(c.Structure):
 
 
 assert c.sizeof(ScanRequest) == 96
-assert c.sizeof(ScanResult) == 1100
+assert c.sizeof(ScanResult) == 3152
 assert c.sizeof(ScanCompletion) == 16
 
 
@@ -48,7 +51,8 @@ def decode_request(request):
     if bool(request.channelCount) != any(selected):
         raise ValueError('Invalid native scan channel selection')
     supported = [(channel, band) for band, channels in
-                 ((0, CHANNELS_24GHZ), (1, CHANNELS_5GHZ)) for channel in channels]
+                 ((0, NATIVE_PASSIVE_CHANNELS_24GHZ),
+                  (1, NATIVE_PASSIVE_CHANNELS_5GHZ)) for channel in channels]
     frequencies = tuple(channel_to_frequency(channel, band) for channel, band in supported
                         if not request.channelCount or selected[channel // 8] & (1 << (channel % 8)))
     if not frequencies:
@@ -142,6 +146,15 @@ def encode_result(sequence, item):
     result.sequence = sequence
     result.length = len(payload)
     result.data[:len(payload)] = payload
+    frame = beacon.get('frame')
+    if frame is not None:
+        if (not isinstance(frame, bytes) or not 36 <= len(frame) <= 2048 or
+                frame[0] != 0x80 or frame[1] & 0x40 or
+                frame[16:22] != bssid or frame[32:34] != struct.pack('<H', interval) or
+                frame[34:36] != struct.pack('<H', capability) or frame[36:] != ies):
+            raise ValueError('Invalid actual beacon frame')
+        result.beaconLength = len(frame)
+        result.beacon[:len(frame)] = frame
     return result
 
 

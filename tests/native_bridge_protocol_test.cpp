@@ -126,7 +126,16 @@ int main() {
     join.channelSpec = 0xd02c;
     join.bssid[0] = 2;
     join.bssid[5] = 1;
+    join.stationMac[0] = 2;
+    join.stationMac[5] = 2;
     assert(AICNativeJoinRequestValid(join));
+    join.stationMac[0] = 3;
+    assert(!AICNativeJoinRequestValid(join));
+    join.stationMac[0] = 0;
+    join.stationMac[5] = 0;
+    assert(!AICNativeJoinRequestValid(join));
+    join.stationMac[0] = 2;
+    join.stationMac[5] = 2;
     join.ssid[5] = 'X';
     assert(!AICNativeJoinRequestValid(join));
     join.ssid[5] = 0;
@@ -140,6 +149,13 @@ int main() {
     const AICWCLConnectionEvent event = AICMakeWCLConnectionEvent(
         join.bssid, true, 0);
     assert(event.status == 0 && event.peers[0].bssid[5] == 1);
+    const AICWCLLinkStatusEvent link = AICMakeWCLLinkStatusEvent(
+        join.bssid, true);
+    assert(link.up == 1 && link.bssid[5] == 1 && link.reason == 255);
+    assert(AICMakeWCLLinkStatusEvent(join.bssid, false).up == 0);
+    const AICWCLFirstBeaconEvent firstBeacon =
+        AICMakeWCLFirstBeaconEvent(join.bssid);
+    assert(firstBeacon.status == 0 && firstBeacon.peer.bssid[5] == 1);
 
     AICNativeFrame frame = {};
     frame.version = kAICNativeBridgeVersion;
@@ -149,6 +165,14 @@ int main() {
     frame.length = 14;
     assert(AICNativeFrameValid(frame, true));
     assert(AICNativeFrameValid(frame, false));
+    AICNativeFrameBatch batch = {};
+    batch.version = kAICNativeBridgeVersion;
+    batch.count = 1;
+    batch.frames[0] = frame;
+    assert(AICNativeFrameBatchValid(batch, true));
+    batch.count = kAICNativeFrameBatchCapacity + 1;
+    assert(!AICNativeFrameBatchValid(batch, true));
+    batch.count = 1;
     frame.vif = 0xff;
     assert(!AICNativeFrameValid(frame, true));
     frame.vif = 1;
@@ -189,6 +213,19 @@ int main() {
     assert(frames.push(frame, true));
     frames.clear();
     assert(frames.size() == 0 && !frames.pop(&output));
+    AICNativeTransmitMailbox outbound;
+    static_assert(AICNativeTransmitMailbox::kCapacity >= 32,
+                  "browser bursts need a larger outbound mailbox");
+    for (unsigned i = 0; i < AICNativeTransmitMailbox::kCapacity; ++i) {
+        frame.sequence = i + 1;
+        assert(outbound.push(frame, true));
+    }
+    assert(!outbound.push(frame, true));
+    for (unsigned i = 0; i < AICNativeTransmitMailbox::kCapacity; ++i) {
+        assert(outbound.pop(&output));
+        assert(output.sequence == i + 1);
+    }
+    assert(!outbound.pop(&output));
     frame.data[40] = 1;
     assert(!AICNativeFrameValid(frame, true));
 

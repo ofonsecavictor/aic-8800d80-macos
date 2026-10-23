@@ -40,8 +40,46 @@ Wifi *wifi_open(uint32_t *error){
 }
 uint32_t wifi_location(Wifi *w){return w?w->location:0;}
 uint64_t wifi_registry_id(Wifi *w){return w?w->registryID:0;}
-uint32_t wifi_write(Wifi *w,const void *data,uint32_t length){
- if(!w||!data||length<16||length>2048)return 0xe00002c2;
+/* Recover only this verified dongle after a persistent boot-time interface
+ * failure. Re-enumeration is equivalent to unplug/replug and is never used
+ * during an open Wi-Fi session. No hub or unrelated USB device is reset. */
+uint32_t wifi_reenumerate_verified(void){
+ io_iterator_t it=0;io_service_t s=0,target=0;
+ IOReturn r=IOServiceGetMatchingServices(kIOMainPortDefault,
+     IOServiceMatching("IOUSBHostDevice"),&it);
+ if(r)return r;
+ while((s=IOIteratorNext(it))){
+  int verified=number(s,CFSTR("idVendor"))==0xa69c&&
+      number(s,CFSTR("idProduct"))==0x8d81&&
+      stringIs(s,CFSTR("USB Serial Number"),CFSTR("20220103"))&&
+      stringIs(s,CFSTR("USB Product Name"),CFSTR("AIC 8800D80"));
+  if(verified){
+   if(target){IOObjectRelease(s);IOObjectRelease(target);IOObjectRelease(it);return 0xe00002c2;}
+   target=s;
+  }else IOObjectRelease(s);
+ }
+ IOObjectRelease(it);
+ if(!target)return 0xe00002c0;
+ IOCFPlugInInterface **plugin=NULL;SInt32 score=0;
+ r=IOCreatePlugInInterfaceForService(target,kIOUSBDeviceUserClientTypeID,
+     kIOCFPlugInInterfaceID,&plugin,&score);
+ IOObjectRelease(target);
+ if(r||!plugin)return r?r:0xe00002bc;
+ IOUSBDeviceInterface187 **device=NULL;
+ HRESULT h=(*plugin)->QueryInterface(plugin,
+     CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID187),(LPVOID*)&device);
+ IODestroyPlugInInterface(plugin);
+ if(h||!device)return h?(uint32_t)h:0xe00002bc;
+ r=(*device)->USBDeviceOpen(device);
+ if(!r){
+  r=(*device)->USBDeviceReEnumerate(device,0);
+  (*device)->USBDeviceClose(device);
+ }
+ (*device)->Release(device);
+ return r;
+}
+uint32_t wifi_validate_command_frame(const void *data,uint32_t length){
+ if(!data||length<16||length>2048)return 0xe00002c2;
  const unsigned char *p=data;unsigned id=p[8]|((unsigned)p[9]<<8);
  /* Reference-derived FullMAC messages; never resets the USB device. */
  unsigned expected=0xffff;
@@ -49,10 +87,18 @@ uint32_t wifi_write(Wifi *w,const void *data,uint32_t length){
  case 6:expected=10;break;case 8:expected=1;break;case 14:expected=4;break;case 0x65:expected=16;break;case 0x69:expected=24;break;
  case 0x73:case 0x7b:expected=4;break;case 0x77:expected=95;break;
  case 70:expected=20;break; /* MM_REMAIN_ON_CHANNEL_REQ, research branch only. */
+ case 0x1400:expected=112;break; /* ME_CONFIG_REQ: HT/VHT/HE capability ABI. */
+ case 0x1402:expected=254;break; /* ME_CHAN_CONFIG_REQ: regulatory channels. */
  case 0x1411:expected=14;break; /* ME_CONFIG_MONITOR_REQ, research branch only. */
  case 0x24:expected=44;break;case 0x26:expected=1;break;case 0x1404:expected=2;break;
  case 0x1000:expected=376;break;case 0x1800:expected=320;break;case 0x1803:expected=4;break;}
  if(expected==0xffff||length!=expected+16||p[14]!=(expected&255)||p[15]!=(expected>>8))return 0xe00002c2;
+ return 0;
+}
+uint32_t wifi_write(Wifi *w,const void *data,uint32_t length){
+ if(!w)return 0xe00002c2;
+ uint32_t status=wifi_validate_command_frame(data,length);
+ if(status)return status;
  return (*w->usb)->WritePipeTO(w->usb,w->msgOut,(void *)data,length,1000,2000);
 }
 uint32_t wifi_read(Wifi *w,void *data,uint32_t *length){

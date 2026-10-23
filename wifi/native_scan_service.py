@@ -5,12 +5,14 @@ simultaneous ownership with the UTUN implementation. Native connection is
 still untested; no AirDrop path is supplied by this module.
 """
 
+import os
 import threading
 import time
 
 from native_radio_control import NativeScanNotReady
 from native_radio_control import ETHERNET_FRAME, frame_for_service_rx
 from native_scan_bridge import matches_request
+from native_ethernet import normalize_native_ethernet
 
 
 SCAN_FAILED = 0xe00002bc
@@ -22,7 +24,7 @@ class NativeLeaveRequested(RuntimeError):
 
 
 class NativeScanSession:
-    def __init__(self, wifi, bridge, stop=None):
+    def __init__(self, wifi, bridge, stop=None, scan_only=False, ready=None):
         self.wifi = wifi
         self.bridge = bridge
         self.stop = stop if stop is not None else threading.Event()
@@ -31,7 +33,17 @@ class NativeScanSession:
         self.last_sequence = None
         self.last_join_sequence = None
         self.frame_sequence = 0
+        # In-memory beacons from the most recent physical scans. A scan while
+        # associated must not reconfigure the firmware station VIF: doing so
+        # interrupts DHCP/data and can time out the USB control endpoint.
+        self.scan_cache = {}
         self.powered = True
+        self.scan_only = scan_only
+        self.ready = ready
+        # Only the temporary diagnostic requests sparse radio TX status.
+        self.tx_sample = os.environ.get('AIC_NATIVE_TX_SAMPLE') == '1'
+        self.rx_ingress = {'accepted': 0, 'trimmed': 0, 'rejected': 0}
+        self.rx_report_at = time.monotonic() + 30
 
     def poll_control(self, active=False):
         power = self.bridge.next_power_command()
@@ -55,6 +67,8 @@ class NativeScanSession:
         while not self.stop.is_set():
             try:
                 self.bridge.enable_scan_bridge()
+                if self.ready is not None:
+                    self.ready.set()
                 return
             except NativeScanNotReady:
                 if time.monotonic() >= deadline:
@@ -72,6 +86,7 @@ class NativeScanSession:
         completion_attempted = False
 
         def beacon(item):
+            self.remember_beacon(item)
             if matches_request(request, item):
                 try:
                     self.bridge.submit_scan_result(sequence, item)
@@ -111,6 +126,33 @@ class NativeScanSession:
             self.wifi.control_observer = previous_control
             self.wifi.kernel_poll = previous_poll
 
+    def remember_beacon(self, item):
+        beacon = item.get('_beacon') if isinstance(item, dict) else None
+        if not isinstance(beacon, dict) or not isinstance(beacon.get('ies'), bytes):
+            return
+        key = (item.get('bssid'), item.get('frequency'))
+        if key[0] is None or key[1] is None:
+            return
+        self.scan_cache.pop(key, None)
+        self.scan_cache[key] = item
+        if len(self.scan_cache) > 64:
+            self.scan_cache.pop(next(iter(self.scan_cache)))
+
+    def answer_connected_scan(self, request):
+        # WCL still scans periodically after joining. Serve the last observed
+        # beacons promptly; an on-air scan on this VIF is not yet safe.
+        sequence = request['sequence']
+        if sequence == self.last_sequence:
+            raise RuntimeError('Repeated native AIC scan sequence')
+        for item in self.scan_cache.values():
+            if matches_request(request, item):
+                try:
+                    self.bridge.submit_scan_result(sequence, item)
+                except ValueError:
+                    pass
+        self.bridge.complete_scan(sequence)
+        self.last_sequence = sequence
+
     def execute_join(self, request):
         sequence = request['sequence']
         if sequence == self.last_join_sequence:
@@ -119,6 +161,7 @@ class NativeScanSession:
         previous_session = self.wifi.kernel_session
         previous_target_bssid = getattr(self.wifi, 'target_bssid', None)
         previous_target_band = getattr(self.wifi, 'target_band', None)
+        hardware_mac = self.wifi.mac
         previous_scan_observer = self.wifi.scan_observer
         previous_poll = self.wifi.kernel_poll
         completed = False
@@ -139,38 +182,99 @@ class NativeScanSession:
             try:
                 while not self.stop.is_set():
                     self.poll_control(active=True)
-                    for frame in self.wifi.receive_native():
+                    scan_request = self.bridge.next_scan_request()
+                    if scan_request is not None:
+                        self.answer_connected_scan(scan_request)
+                    received = self.wifi.receive_native()
+                    receive_batch = []
+                    direct_submit = getattr(
+                        self.bridge, 'submit_received_ethernet', None)
+                    for frame in received:
                         if frame[12:14] == b'\x88\x8e':
                             service_eapol(frame)
-                        elif 14 <= len(frame) <= 1514:
+                        else:
+                            bounded = normalize_native_ethernet(frame)
+                            if bounded is None:
+                                self.rx_ingress['rejected'] += 1
+                                continue
+                            self.rx_ingress['accepted'] += 1
+                            self.rx_ingress['trimmed'] += len(bounded) != len(frame)
                             self.frame_sequence = (self.frame_sequence + 1) & 0xffffffff
                             if not self.frame_sequence:
                                 self.frame_sequence = 1
-                            packet = frame_for_service_rx(
-                                ETHERNET_FRAME, frame, self.frame_sequence, 0)
-                            self.bridge.submit_received_frame(packet)
-                    for _ in range(32):
-                        packet = self.bridge.next_transmit_frame()
-                        if packet is None:
-                            break
+                            if direct_submit is not None:
+                                receive_batch.append((bounded, self.frame_sequence))
+                            else:
+                                packet = frame_for_service_rx(
+                                    ETHERNET_FRAME, bounded, self.frame_sequence, 0)
+                                receive_batch.append(packet)
+                    if time.monotonic() >= self.rx_report_at:
+                        transport = {
+                            key: self.wifi.rx_diagnostics.get(key)
+                            for key in ('records', 'malformed', 'ethernet_frames',
+                                        'queue_highwater', 'queue_dropped')
+                        }
+                        print('AIC native RX ingress: '+str(self.rx_ingress)
+                              +' transport: '+str(transport)
+                              +' PHY: '+str(self.wifi.rx_diagnostics.get('phy',{}))
+                              +' header: '+str(self.wifi.rx_diagnostics.get('sample_header')),
+                              flush=True)
+                        self.rx_report_at = time.monotonic() + 30
+                    if receive_batch:
+                        submit = getattr(self.bridge, 'submit_received_frames', None)
+                        if direct_submit is not None:
+                            direct_submit(receive_batch)
+                        elif submit is not None:
+                            submit(receive_batch)
+                        else:
+                            for packet in receive_batch:
+                                self.bridge.submit_received_frame(packet)
+                    transmitted = 0
+                    batch_reader = getattr(self.bridge, 'next_transmit_frames', None)
+                    if batch_reader is not None:
+                        packets = batch_reader()
+                    else:
+                        packets = []
+                        for _ in range(32):
+                            packet = self.bridge.next_transmit_frame()
+                            if packet is None:
+                                break
+                            packets.append(packet)
+                    for packet in packets:
+                        transmitted += 1
                         if packet.kind != ETHERNET_FRAME:
                             continue  # No peer-to-peer action-frame path in this phase.
                         frame = bytes(packet.data[:packet.length])
                         if frame[12:14] != b'\x88\x8e':
+                            sample = ({'sample_confirmation':
+                                       self.wifi.tx_diagnostics['data_submitted'] % 16 == 0}
+                                      if self.tx_sample else {})
                             self.wifi.data_write(frame, vif, station, 'dados',
-                                                 quiet=True, require_confirmation=False)
-                    self.stop.wait(.002)
+                                                 quiet=True, require_confirmation=False,
+                                                 **sample)
+                    # The bounded kernel TX mailbox can still fill during a
+                    # browser asset burst. Yield only when both directions
+                    # were idle; otherwise immediately drain the next batch.
+                    if not received and not transmitted:
+                        self.stop.wait(.002)
             finally:
                 self.wifi.active_vif = None
 
         self.wifi.radio_observer = radio
         self.wifi.kernel_session = connected
-        self.wifi.scan_observer = lambda _item: None  # Preserve beacon IEs for WPA2 validation.
+        self.wifi.scan_observer = self.remember_beacon  # Preserve beacon IEs for WPA2 validation.
         self.wifi.kernel_poll = lambda: self.poll_control(active=True)
         self.wifi.target_bssid = request['bssid']
         self.wifi.target_band = 0 if request['frequency'] < 3000 else 1
         try:
+            station_mac = request['station_mac']
+            if (not isinstance(station_mac, bytes) or len(station_mac) != 6 or
+                    not any(station_mac) or station_mac[0] & 1):
+                raise ValueError('Invalid native station address')
             self.poll_control(active=True)
+            # The firmware VIF, EAPOL supplicant and kernel data path must all
+            # use the address selected by macOS for this specific network.
+            self.wifi.mac = station_mac
             self.wifi.scan(request['ssid'], request['key'],
                            scan_frequencies=(request['frequency'],),
                            publish_results=False)
@@ -193,6 +297,12 @@ class NativeScanSession:
             self.wifi.kernel_poll = previous_poll
             self.wifi.target_bssid = previous_target_bssid
             self.wifi.target_band = previous_target_band
+            self.wifi.mac = hardware_mac
+            if hardware_mac != request.get('station_mac'):
+                try:
+                    self.bridge.publish(self.powered, None, hardware_mac)
+                except RuntimeError:
+                    pass  # The bridge may already be closing after cancellation.
             request.pop('key', None)
 
     def run(self):
@@ -212,7 +322,7 @@ class NativeScanSession:
                     continue
                 join = self.bridge.next_join_request()
                 if join is not None:
-                    if not self.powered:
+                    if self.scan_only or not self.powered:
                         try:
                             self.bridge.complete_join(join['sequence'], SCAN_ABORTED)
                         finally:
@@ -228,8 +338,7 @@ class NativeScanSession:
                         # USB/bridge failures still require supervisor recovery.
                         if ('USB' in str(error) or 'native ' in str(error)):
                             raise
-                        print('AIC: conexão nativa falhou; pronto para nova tentativa.',
-                              flush=True)
+                        print('AIC: conexão nativa falhou: '+str(error), flush=True)
                     continue
                 self.stop.wait(.05)
         finally:

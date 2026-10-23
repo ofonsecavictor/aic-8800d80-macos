@@ -3,13 +3,11 @@
     IOReturn getPOWERSAVE(apple80211_powersave_data*) override { return kIOReturnUnsupported; }
     IOReturn getTXPOWER(apple80211_txpower_data*) override { return kIOReturnUnsupported; }
     IOReturn getRATE(apple80211_rate_data*) override { return kIOReturnUnsupported; }
-    IOReturn getSUPPORTED_CHANNELS(apple80211_sup_channel_data*) override { return kIOReturnUnsupported; }
     IOReturn getGUARD_INTERVAL(apple80211_guard_interval_data*) override { return kIOReturnUnsupported; }
     IOReturn getMCS(apple80211_mcs_data*) override { return kIOReturnUnsupported; }
     IOReturn getPOWER_DEBUG_INFO(apple80211_power_debug_info*) override { return kIOReturnUnsupported; }
     IOReturn getHT_CAPABILITY(apple80211_ht_capability*) override { return kIOReturnUnsupported; }
     IOReturn getMCS_VHT(apple80211_mcs_vht_data*) override { return kIOReturnUnsupported; }
-    IOReturn getCHANNELS_INFO(apple80211_channels_info*) override { return kIOReturnUnsupported; }
     IOReturn getVHT_CAPABILITY(apple80211_vht_capability*) override { return kIOReturnUnsupported; }
     IOReturn getROAM_PROFILE(apple80211_roam_profile_all_bands*) override { return kIOReturnUnsupported; }
     IOReturn getCHIP_COUNTER_STATS(apple80211_chip_stats*) override { return kIOReturnUnsupported; }
@@ -22,7 +20,6 @@
     IOReturn getAWDL_RSDB_CAPS(apple80211_rsdb_capability*) override { return kIOReturnUnsupported; }
     IOReturn getTKO_PARAMS(apple80211_tko_params*) override { return kIOReturnUnsupported; }
     IOReturn getTKO_DUMP(apple80211_tko_dump*) override { return kIOReturnUnsupported; }
-    IOReturn getHW_SUPPORTED_CHANNELS(apple80211_sup_channel_data*) override { return kIOReturnUnsupported; }
     IOReturn getBTCOEX_PROFILE(apple80211_btcoex_profile*) override { return kIOReturnUnsupported; }
     IOReturn getBTCOEX_PROFILE_ACTIVE(apple80211_btcoex_profile_active_data*) override { return kIOReturnUnsupported; }
     IOReturn getTRAP_INFO(apple80211_trap_info_data*) override { return kIOReturnUnsupported; }
@@ -34,7 +31,6 @@
     IOReturn getRANGING_CAPS(apple80211_ranging_capabilities_t*) override { return kIOReturnUnsupported; }
     IOReturn getLQM_CONFIG(apple80211_lqm_config_t*) override { return kIOReturnUnsupported; }
     IOReturn getTRAP_CRASHTRACER_MINI_DUMP(apple80211_trap_mini_dump_data*) override { return kIOReturnUnsupported; }
-    IOReturn getBEACON_INFO(apple80211_beacon_info_t*) override { return kIOReturnUnsupported; }
     IOReturn getCHIP_POWER_RANGE(apple80211_chip_power_limit*) override { return kIOReturnUnsupported; }
     IOReturn getNSS(apple80211_nss_data*) override { return kIOReturnUnsupported; }
     IOReturn getCHIP_DIAGS(appl80211_chip_diags_data*) override { return kIOReturnUnsupported; }
@@ -50,16 +46,12 @@
     IOReturn getTIMESYNC_INFO(apple80211_timesync_info*) override { return kIOReturnUnsupported; }
     IOReturn getSENSING_DATA(apple80211_sensing_data_t*) override { return kIOReturnUnsupported; }
     IOReturn getWCL_FW_HOT_CHANNELS(apple80211_fw_hot_channels*) override { return kIOReturnUnsupported; }
-    IOReturn getWCL_LOW_LATENCY_INFO(apple80211_low_latency_info*) override { return kIOReturnUnsupported; }
-    IOReturn getWCL_BSS_INFO(apple80211_beacon_msg*) override { return kIOReturnUnsupported; }
     IOReturn getWCL_TRAFFIC_COUNTERS(apple80211_wcl_traffic_counters*) override { return kIOReturnUnsupported; }
     IOReturn getWCL_GET_TX_BLANKING_STATUS(unsigned int*) override { return kIOReturnUnsupported; }
     IOReturn getHE_COUNTERS(apple80211_he_counters_ctl*) override { return kIOReturnUnsupported; }
-    IOReturn getWCL_CHANNELS_INFO(apple80211ChannelInfo*) override { return kIOReturnUnsupported; }
     IOReturn getRSN_XE(apple80211_rsn_xe_data*) override { return kIOReturnUnsupported; }
     IOReturn getSIB_COEX_STATUS(apple80211_sib_coex_status*) override { return kIOReturnUnsupported; }
     IOReturn getWIFI_BT_5G_POLICY(apple80211_wifi_bt_5g_policy_t*) override { return kIOReturnUnsupported; }
-    IOReturn getWCL_EXTENDED_BSS_INFO(apple80211_extended_bss_info*) override { return kIOReturnUnsupported; }
     IOReturn getWCL_LOW_LATENCY_INFO_STATS(apple80211_wcl_low_latency_stats*) override { return kIOReturnUnsupported; }
     IOReturn getWCL_BGSCAN_CACHE_RESULT(apple80211_bgscan_cached_network_data_list*) override { return kIOReturnUnsupported; }
     IOReturn getWCL_WNM_OFFLOAD(apple80211_wcl_wnm_offload_t*) override { return kIOReturnUnsupported; }
@@ -150,7 +142,6 @@
     IOReturn setEAP_FILTER_CONFIG(apple80211_eap_filter_config*) override { return kIOReturnUnsupported; }
     IOReturn setWOW_LOW_POWER_MODE(apple80211_wow_low_power_mode*) override { return kIOReturnUnsupported; }
     IOReturn setDUAL_POWER_MODE(apple80211_dual_power_mode_params*) override { return kIOReturnUnsupported; }
-    IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane*) override { return kIOReturnUnsupported; }
     IOReturn setWCL_ASSOCIATED_SLEEP(apple80211_associated_sleep_config*) override { return kIOReturnUnsupported; }
     IOReturn setCONGESTION_CTRL_IND(apple80211_congestion_control_indication*) override { return kIOReturnUnsupported; }
     IOReturn setSTAND_ALONE_MODE_STATE(apple80211_standalone_state*) override { return kIOReturnUnsupported; }

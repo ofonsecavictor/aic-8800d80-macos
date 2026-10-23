@@ -1,6 +1,8 @@
 #include "AICNativeBridgeUserClient.h"
 #include "AICNativeBridgeProtocol.h"
 #include <IOKit/IOLib.h>
+#include <IOKit/IOMemoryDescriptor.h>
+#include "AICNativeBatchTransfer.h"
 
 // Defined by the controller. The service argument is checked before casting.
 extern "C" IOReturn AICNativePublishState(IOService *service,
@@ -11,6 +13,10 @@ extern "C" IOReturn AICNativeSubmitReceivedFrame(
     IOService *service, const AICNativeFrame *frame);
 extern "C" IOReturn AICNativeNextTransmitFrame(
     IOService *service, AICNativeFrame *frame);
+extern "C" IOReturn AICNativeSubmitReceivedFrames(
+    IOService *service, const AICNativeFrameBatch *batch);
+extern "C" IOReturn AICNativeNextTransmitFrames(
+    IOService *service, AICNativeFrameBatch *batch);
 extern "C" IOReturn AICNativeNextScanRequest(
     IOService *service, AICNativeScanRequest *request);
 extern "C" IOReturn AICNativeSubmitScanResult(
@@ -54,12 +60,23 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             arguments->structureOutputSize != 0 ||
             arguments->structureInputSize != sizeof(AICNativeRadioState) ||
             !arguments->structureInput) {
+            IOLog("AICNative: state publish rejected argument shape\n");
             return kIOReturnBadArgument;
         }
         AICNativeRadioState state;
         bcopy(arguments->structureInput, &state, sizeof(state));
-        if (!AICNativeRadioStateValid(state)) return kIOReturnBadArgument;
-        return AICNativePublishState(getService(), &state);
+        if (!AICNativeRadioStateValid(state)) {
+            IOLog("AICNative: state publish rejected invalid state\n");
+            return kIOReturnBadArgument;
+        }
+        // The user client is attached directly to this controller. Use the
+        // IOKit provider relationship instead of an optional service cache.
+        IOService *controller = getProvider();
+        IOReturn status = AICNativePublishState(controller, &state);
+        if (status != kIOReturnSuccess)
+            IOLog("AICNative: state publish failed: 0x%x, provider=%d\n",
+                  status, controller != nullptr);
+        return status;
     }
     if (selector == kAICNativeNextCommand) {
         if (arguments->scalarInputCount != 0 ||
@@ -70,7 +87,7 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             return kIOReturnBadArgument;
         }
         AICNativeCommand command = {};
-        IOReturn status = AICNativeNextCommand(getService(), &command);
+        IOReturn status = AICNativeNextCommand(getProvider(), &command);
         if (status != kIOReturnSuccess) return status;
         if (!AICNativeCommandValid(command)) return kIOReturnError;
         bcopy(&command, arguments->structureOutput, sizeof(command));
@@ -86,7 +103,7 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             return kIOReturnBadArgument;
         AICNativeFrame frame;
         bcopy(arguments->structureInput, &frame, sizeof(frame));
-        return AICNativeSubmitReceivedFrame(getService(), &frame);
+        return AICNativeSubmitReceivedFrame(getProvider(), &frame);
     }
     if (selector == kAICNativeNextFrame) {
         if (arguments->scalarInputCount != 0 ||
@@ -96,12 +113,48 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             arguments->structureOutputSize < sizeof(AICNativeFrame))
             return kIOReturnBadArgument;
         AICNativeFrame frame = {};
-        IOReturn status = AICNativeNextTransmitFrame(getService(), &frame);
+        IOReturn status = AICNativeNextTransmitFrame(getProvider(), &frame);
         if (status != kIOReturnSuccess) return status;
         if (!AICNativeFrameValid(frame, false)) return kIOReturnError;
         bcopy(&frame, arguments->structureOutput, sizeof(frame));
         arguments->structureOutputSize = sizeof(frame);
         return kIOReturnSuccess;
+    }
+    if (selector == kAICNativeSubmitFrameBatch) {
+        if (!AICBatchInputValid(*arguments, sizeof(AICNativeFrameBatch)))
+            return kIOReturnBadArgument;
+        auto *batch = static_cast<AICNativeFrameBatch *>(
+            IOMalloc(sizeof(AICNativeFrameBatch)));
+        if (!batch) return kIOReturnNoMemory;
+        if (!AICBatchRead(*arguments, batch, sizeof(*batch))) {
+            bzero(batch, sizeof(*batch));
+            IOFree(batch, sizeof(*batch));
+            return kIOReturnBadArgument;
+        }
+        IOReturn status = AICNativeFrameBatchValid(*batch, true)
+            ? AICNativeSubmitReceivedFrames(getProvider(), batch)
+            : kIOReturnBadArgument;
+        bzero(batch, sizeof(*batch));
+        IOFree(batch, sizeof(*batch));
+        return status;
+    }
+    if (selector == kAICNativeNextFrameBatch) {
+        if (!AICBatchOutputValid(*arguments, sizeof(AICNativeFrameBatch)))
+            return kIOReturnBadArgument;
+        auto *batch = static_cast<AICNativeFrameBatch *>(
+            IOMalloc(sizeof(AICNativeFrameBatch)));
+        if (!batch) return kIOReturnNoMemory;
+        bzero(batch, sizeof(*batch));
+        IOReturn status = AICNativeNextTransmitFrames(getProvider(), batch);
+        if (status == kIOReturnSuccess && !AICNativeFrameBatchValid(*batch, false))
+            status = kIOReturnError;
+        if (status == kIOReturnSuccess) {
+            if (!AICBatchWrite(*arguments, batch, sizeof(*batch)))
+                status = kIOReturnError;
+        }
+        bzero(batch, sizeof(*batch));
+        IOFree(batch, sizeof(*batch));
+        return status;
     }
     if (selector == kAICNativeNextScan) {
         if (arguments->scalarInputCount || arguments->scalarOutputCount ||
@@ -109,7 +162,7 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             arguments->structureOutputSize < sizeof(AICNativeScanRequest))
             return kIOReturnBadArgument;
         AICNativeScanRequest request = {};
-        IOReturn status = AICNativeNextScanRequest(getService(), &request);
+        IOReturn status = AICNativeNextScanRequest(getProvider(), &request);
         if (status != kIOReturnSuccess) return status;
         if (!AICNativeScanRequestValid(request)) return kIOReturnError;
         bcopy(&request, arguments->structureOutput, sizeof(request));
@@ -125,7 +178,7 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             IOMalloc(sizeof(AICNativeScanResult)));
         if (!result) return kIOReturnNoMemory;
         bcopy(arguments->structureInput, result, sizeof(*result));
-        IOReturn status = AICNativeSubmitScanResult(getService(), result);
+        IOReturn status = AICNativeSubmitScanResult(getProvider(), result);
         bzero(result, sizeof(*result));
         IOFree(result, sizeof(*result));
         return status;
@@ -137,13 +190,13 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             !arguments->structureInput) return kIOReturnBadArgument;
         AICNativeScanCompletion completion = {};
         bcopy(arguments->structureInput, &completion, sizeof(completion));
-        return AICNativeCompleteScan(getService(), &completion);
+        return AICNativeCompleteScan(getProvider(), &completion);
     }
     if (selector == kAICNativeEnableScanBridge) {
         if (arguments->scalarInputCount || arguments->scalarOutputCount ||
             arguments->structureInputSize || arguments->structureOutputSize)
             return kIOReturnBadArgument;
-        return AICNativeSetScanBridgeEnabled(getService(), this, true);
+        return AICNativeSetScanBridgeEnabled(getProvider(), this, true);
     }
     if (selector == kAICNativeNextJoin) {
         if (arguments->scalarInputCount || arguments->scalarOutputCount ||
@@ -151,7 +204,7 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             arguments->structureOutputSize < sizeof(AICNativeJoinRequest))
             return kIOReturnBadArgument;
         AICNativeJoinRequest request = {};
-        IOReturn status = AICNativeNextJoinRequest(getService(), this, &request);
+        IOReturn status = AICNativeNextJoinRequest(getProvider(), this, &request);
         if (status == kIOReturnSuccess) {
             if (!AICNativeJoinRequestValid(request)) status = kIOReturnError;
             else {
@@ -169,7 +222,7 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             !arguments->structureInput) return kIOReturnBadArgument;
         AICNativeJoinCompletion completion = {};
         bcopy(arguments->structureInput, &completion, sizeof(completion));
-        return AICNativeCompleteJoin(getService(), this, &completion);
+        return AICNativeCompleteJoin(getProvider(), this, &completion);
     }
     if (selector == kAICNativeNextLeave) {
         if (arguments->scalarInputCount || arguments->scalarOutputCount ||
@@ -177,7 +230,7 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
             arguments->structureOutputSize < sizeof(AICNativeCommand))
             return kIOReturnBadArgument;
         AICNativeCommand command = {};
-        IOReturn status = AICNativeNextLeaveCommand(getService(), this, &command);
+        IOReturn status = AICNativeNextLeaveCommand(getProvider(), this, &command);
         if (status != kIOReturnSuccess) return status;
         if (!AICNativeCommandValid(command) ||
             command.operation != kAICNativeLeave) return kIOReturnError;
@@ -189,7 +242,7 @@ IOReturn AICNativeBridgeUserClient::externalMethod(
 }
 
 IOReturn AICNativeBridgeUserClient::clientClose() {
-    AICNativeSetScanBridgeEnabled(getService(), this, false);
+    AICNativeSetScanBridgeEnabled(getProvider(), this, false);
     terminate();
     return kIOReturnSuccess;
 }

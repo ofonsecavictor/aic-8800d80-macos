@@ -11,9 +11,11 @@ class AICNativeJoinMailbox {
 public:
     static constexpr uint64_t kTimeoutMillis = 30000;
 
-    bool begin(const AICWCLJoinRequest &join, uint64_t nowMillis,
+    bool begin(const AICWCLJoinRequest &join, const uint8_t stationMac[6],
+               uint64_t nowMillis,
                uint32_t *newSequence) {
-        if (!newSequence || pending || nowMillis > UINT64_MAX - kTimeoutMillis)
+        if (!stationMac || !newSequence || pending ||
+            nowMillis > UINT64_MAX - kTimeoutMillis)
             return false;
         if (++sequence == 0) ++sequence;
         AICNativeJoinRequest request = {};
@@ -26,6 +28,7 @@ public:
         memcpy(request.bssid, join.bssid, sizeof(request.bssid));
         memcpy(request.pmk, join.pmk, sizeof(request.pmk));
         memcpy(request.rsn, join.rsn, sizeof(request.rsn));
+        memcpy(request.stationMac, stationMac, sizeof(request.stationMac));
         if (!AICNativeJoinRequestValid(request)) {
             wipe(&request, sizeof(request));
             return false;

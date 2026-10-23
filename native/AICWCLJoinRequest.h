@@ -73,8 +73,13 @@ inline bool AICDecodeWCLJoinRequest(const void *buffer, size_t length,
         !ssidLength || ssidLength > 32 || keyLength != 32 ||
         rsnLength > kAICWCLMaxRSNLength ||
         AICJoinRead32(p + 0x10) != 1 || // Open-system 802.11 authentication.
-        AICJoinRead32(p + 0x14) != (1u << 3) || // WPA2-PSK only.
-        AICJoinRead32(p + 0x48) != 6 || // PMK, not PMKSA/WEP/PTK.
+        // A transition-mode AP may advertise SAE alongside PSK. Accept only
+        // when the request still includes PSK and supplies a 32-byte PMK;
+        // pure SAE remains unsupported.
+        (AICJoinRead32(p + 0x14) != (1u << 3) &&
+         AICJoinRead32(p + 0x14) != ((1u << 3) | (1u << 12))) ||
+        (AICJoinRead32(p + 0x48) != 6 &&
+         AICJoinRead32(p + 0x48) != 7) || // PMK or cached PMKSA, not WEP/PTK.
         AICJoinRead16(p + 0x4e) != 0 ||
         !AICJoinRSNSupported(p + 0xd6, rsnLength) ||
         (p[0x21c] & 1)) return false;
