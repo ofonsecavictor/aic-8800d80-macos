@@ -10,13 +10,22 @@ from native_scan_bridge import (ScanRequest, completion as scan_completion,
 from native_join_bridge import (JoinRequest, decode_join_request,
                                 join_completion)
 
-VERSION = 5
+VERSION = 6
 NOT_FOUND = 0
 NOT_READY = 0xe00002d8
 SET_POWER = 1
 LEAVE_NETWORK = 2
 ETHERNET_FRAME = 1
 ACTION_FRAME = 2
+
+
+class AWDLState(c.Structure):
+    _fields_ = [('version', c.c_uint32), ('sequence', c.c_uint32),
+                ('enabled', c.c_uint32), ('channel', c.c_uint32),
+                ('mac', c.c_uint8 * 6), ('reserved', c.c_uint8 * 2)]
+
+
+assert c.sizeof(AWDLState) == 24
 
 
 class NativeScanNotReady(RuntimeError):
@@ -128,6 +137,17 @@ def decode_leave_command(command):
             not command.sequence or command.value != 0):
         raise ValueError('Invalid AIC native leave command')
     return command.sequence
+
+
+def decode_awdl_state(state):
+    mac = bytes(state.mac)
+    if (state.version != VERSION or not state.sequence or
+            state.enabled not in (0, 1) or not 0 <= state.channel <= 196 or
+            any(state.reserved) or len(mac) != 6 or mac[0] & 1 or
+            not any(mac) or (state.enabled and state.channel == 0)):
+        raise ValueError('Invalid AIC AWDL state')
+    return {'sequence': state.sequence, 'enabled': bool(state.enabled),
+            'channel': state.channel, 'mac': mac}
 
 
 def state_for(powered, target, mac):
@@ -315,6 +335,19 @@ class NativeRadioPublisher:
         if status or size.value != c.sizeof(command):
             raise RuntimeError('AIC native leave read: %08x' % status)
         return decode_leave_command(command)
+
+    def next_awdl_state(self):
+        if not self.connect:
+            return None
+        state = AWDLState()
+        size = c.c_size_t(c.sizeof(state))
+        status = self.library.IOConnectCallStructMethod(
+            self.connect, 14, None, 0, c.byref(state), c.byref(size))
+        if status == NOT_READY:
+            return None
+        if status or size.value != c.sizeof(state):
+            raise RuntimeError('AIC native AWDL state read: %08x' % status)
+        return decode_awdl_state(state)
 
     def submit_received_frame(self, frame):
         if not self.connect:

@@ -1,18 +1,16 @@
-"""Research-only native scan/join session using the AIC FullMAC USB owner.
-
-Not installed or started by the stable service. The Wifi session lock prevents
-simultaneous ownership with the UTUN implementation. Native connection is
-still untested; no AirDrop path is supplied by this module.
-"""
+"""Native scan/join and bounded AWDL action-frame bridge for AIC FullMAC."""
 
 import os
 import threading
 import time
 
 from native_radio_control import NativeScanNotReady
-from native_radio_control import ETHERNET_FRAME, frame_for_service_rx
+from native_radio_control import (ACTION_FRAME, ETHERNET_FRAME,
+                                  frame_for_service_rx)
 from native_scan_bridge import matches_request
 from native_ethernet import normalize_native_ethernet
+from management import SET_FILTER_REQUEST_ID, other_bssid_filter_request
+from layouts import channel_to_frequency, connectable_frequency
 
 
 SCAN_FAILED = 0xe00002bc
@@ -46,6 +44,50 @@ class NativeScanSession:
         now = time.monotonic()
         self.rx_report_at = now + 30
         self.rate_previous = (now, 0, 0)
+        self.awdl = None
+        self.last_awdl_sequence = None
+
+    def poll_awdl(self, station_vif):
+        reader = getattr(self.bridge, 'next_awdl_state', None)
+        state = reader() if reader is not None else None
+        if state is None:
+            return
+        if state['sequence'] == self.last_awdl_sequence:
+            raise RuntimeError('Repeated native AIC AWDL state sequence')
+        self.last_awdl_sequence = state['sequence']
+        if self.awdl is not None and (not state['enabled'] or
+                                      state['mac'] != self.awdl['mac']):
+            self.wifi.remove_interface(self.awdl['vif'])
+            self.awdl = None
+        if not state['enabled']:
+            return
+        band = 0 if state['channel'] <= 14 else 1
+        frequency = channel_to_frequency(state['channel'], band)
+        if frequency is None or not connectable_frequency(frequency):
+            raise RuntimeError('Unsupported AIC AWDL channel %u' %
+                               state['channel'])
+        if self.awdl is None:
+            vif = self.wifi.add_p2p_interface(state['mac'])
+            if vif == station_vif:
+                self.wifi.remove_interface(vif)
+                raise RuntimeError('AIC firmware reused the station VIF for AWDL')
+            try:
+                self.wifi.request(SET_FILTER_REQUEST_ID,
+                                  other_bssid_filter_request())
+            except BaseException:
+                self.wifi.remove_interface(vif)
+                raise
+            self.awdl = {'vif': vif, 'mac': state['mac'],
+                         'channel': state['channel'], 'frequency': frequency}
+        else:
+            self.awdl['channel'] = state['channel']
+            self.awdl['frequency'] = frequency
+
+    def stop_awdl(self):
+        if self.awdl is not None:
+            vif = self.awdl['vif']
+            self.awdl = None
+            self.wifi.remove_interface(vif)
 
     def poll_control(self, active=False):
         power = self.bridge.next_power_command()
@@ -184,11 +226,13 @@ class NativeScanSession:
             try:
                 while not self.stop.is_set():
                     self.poll_control(active=True)
+                    self.poll_awdl(vif)
                     scan_request = self.bridge.next_scan_request()
                     if scan_request is not None:
                         self.answer_connected_scan(scan_request)
                     received = self.wifi.receive_native()
                     receive_batch = []
+                    action_batch = []
                     direct_submit = getattr(
                         self.bridge, 'submit_received_ethernet', None)
                     for frame in received:
@@ -210,6 +254,17 @@ class NativeScanSession:
                                 packet = frame_for_service_rx(
                                     ETHERNET_FRAME, bounded, self.frame_sequence, 0)
                                 receive_batch.append(packet)
+                    action_reader = getattr(
+                        self.wifi, 'take_native_action_frames', None)
+                    actions = action_reader() if action_reader is not None else ()
+                    if self.awdl is not None:
+                        for _, action in actions:
+                            self.frame_sequence = (self.frame_sequence + 1) & 0xffffffff
+                            if not self.frame_sequence:
+                                self.frame_sequence = 1
+                            action_batch.append(frame_for_service_rx(
+                                ACTION_FRAME, action, self.frame_sequence, 255,
+                                self.awdl['channel']))
                     if time.monotonic() >= self.rx_report_at:
                         report_now = time.monotonic()
                         transport = {
@@ -249,6 +304,13 @@ class NativeScanSession:
                         else:
                             for packet in receive_batch:
                                 self.bridge.submit_received_frame(packet)
+                    if action_batch:
+                        submit = getattr(self.bridge, 'submit_received_frames', None)
+                        if submit is not None:
+                            submit(action_batch)
+                        else:
+                            for packet in action_batch:
+                                self.bridge.submit_received_frame(packet)
                     transmitted = 0
                     batch_reader = getattr(self.bridge, 'next_transmit_frames', None)
                     if batch_reader is not None:
@@ -263,8 +325,15 @@ class NativeScanSession:
                     outbound = []
                     for packet in packets:
                         transmitted += 1
+                        if packet.kind == ACTION_FRAME:
+                            if (self.awdl is not None and packet.vif == 1 and
+                                    packet.channel == self.awdl['channel']):
+                                action = bytes(packet.data[:packet.length])
+                                self.wifi.action_write(
+                                    action, self.awdl['vif'], self.awdl['mac'])
+                            continue
                         if packet.kind != ETHERNET_FRAME:
-                            continue  # No peer-to-peer action-frame path in this phase.
+                            continue
                         frame = bytes(packet.data[:packet.length])
                         if frame[12:14] != b'\x88\x8e':
                             outbound.append(frame)
@@ -286,6 +355,11 @@ class NativeScanSession:
                     if not received and not transmitted:
                         self.stop.wait(.002)
             finally:
+                try:
+                    self.stop_awdl()
+                except Exception as error:
+                    print('AIC: falha ao remover VIF AWDL: '+str(error),
+                          flush=True)
                 self.wifi.active_vif = None
 
         self.wifi.radio_observer = radio

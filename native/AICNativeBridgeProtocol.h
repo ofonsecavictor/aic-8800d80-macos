@@ -6,10 +6,13 @@
 // Shared with the future user-space AIC service. Ordinary state/scan messages
 // contain no credentials; the separate one-shot join message contains a PMK.
 enum {
+    // v6 adds an explicit AWDL virtual-radio state handoff. The package
+    // upgrades the kernel endpoint and USB-owning service together, so mixed
+    // ABI versions fail closed during startup.
     // v5 transfers short bursts in one IOKit call.  The package upgrades the
     // kernel endpoint and USB-owning service together, so mixed ABI versions
     // fail closed during startup.
-    kAICNativeBridgeVersion = 5,
+    kAICNativeBridgeVersion = 6,
     kAICNativeGetVersion = 0,
     kAICNativePublishRadioState = 1,
     kAICNativeNextCommand = 2,
@@ -24,6 +27,7 @@ enum {
     kAICNativeNextLeave = 11,
     kAICNativeNextFrameBatch = 12,
     kAICNativeSubmitFrameBatch = 13,
+    kAICNativeNextAWDLState = 14,
     kAICNativeSetPower = 1,
     kAICNativeLeave = 2,
     kAICNativeFrameEthernet = 1,
@@ -48,6 +52,18 @@ typedef struct AICNativeCommand {
     uint32_t sequence;
     uint32_t value;
 } AICNativeCommand;
+
+// Latest requested state of the macOS AWDL virtual interface. The service
+// consumes this edge-triggered record to create/remove the matching FullMAC
+// P2P VIF. It contains no peer identifiers or AirDrop payload.
+typedef struct AICNativeAWDLState {
+    uint32_t version;
+    uint32_t sequence;
+    uint32_t enabled;
+    uint32_t channel;
+    uint8_t mac[6];
+    uint8_t reserved[2];
+} AICNativeAWDLState;
 
 // Private WCL scan handoff. The service receives a bounded request and sends
 // back only validated beacon metadata/IEs for the same sequence. No password
@@ -129,6 +145,7 @@ typedef struct AICNativeFrameBatch {
 #if defined(__cplusplus)
 static_assert(sizeof(AICNativeRadioState) == 36, "radio state ABI size");
 static_assert(sizeof(AICNativeCommand) == 16, "command ABI size");
+static_assert(sizeof(AICNativeAWDLState) == 24, "AWDL state ABI size");
 static_assert(sizeof(AICNativeScanRequest) == 96, "scan request ABI size");
 static_assert(sizeof(AICNativeScanResult) == 3152, "scan result ABI size");
 static_assert(sizeof(AICNativeScanCompletion) == 16, "scan completion ABI size");
@@ -175,6 +192,15 @@ inline bool AICNativeCommandValid(const AICNativeCommand &command) {
            command.sequence != 0 &&
            ((command.operation == kAICNativeSetPower && command.value <= 1) ||
             (command.operation == kAICNativeLeave && command.value == 0));
+}
+
+inline bool AICNativeAWDLStateValid(const AICNativeAWDLState &state) {
+    if (state.version != kAICNativeBridgeVersion || !state.sequence ||
+        state.enabled > 1 || state.channel > 196 || state.reserved[0] ||
+        state.reserved[1] || (state.mac[0] & 1)) return false;
+    bool nonzero = false;
+    for (unsigned i = 0; i < 6; ++i) nonzero |= state.mac[i] != 0;
+    return nonzero && (!state.enabled || state.channel != 0);
 }
 
 inline bool AICNativeScanRequestValid(const AICNativeScanRequest &request) {

@@ -54,6 +54,7 @@ cleanup() {
     /bin/rm -f "$stage/native_wcl_hardware_address_test"
     /bin/rm -f "$stage/native_startup_policy_test"
     /bin/rm -f "$stage/native_virtual_interface_policy_test"
+    /bin/rm -f "$stage/native_awdl_mailbox_test"
     /bin/rm -f "$stage/exports.txt" "$stage/missing.txt"
     /bin/rm -f "$stage/diagnostics.txt"
     /bin/rm -f "$stage/AICNativeProbe.kext/Contents/MacOS/AICNativeProbe"
@@ -92,6 +93,11 @@ echo 'Topologia segura da fila nativa: teste local OK.'
     "$repo_dir/tests/native_virtual_interface_policy_test.cpp"
 "$stage/native_virtual_interface_policy_test"
 echo 'Política limitada da interface AWDL virtual: teste local OK.'
+/usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
+    -o "$stage/native_awdl_mailbox_test" \
+    "$repo_dir/tests/native_awdl_mailbox_test.cpp"
+"$stage/native_awdl_mailbox_test"
+echo 'Estado AWDL e quadro de ação: testes locais OK.'
 /usr/bin/xcrun clang++ -std=c++14 -Wall -Wextra -Werror \
     -o "$stage/native_scan_request_test" \
     "$repo_dir/tests/native_scan_request_test.cpp"

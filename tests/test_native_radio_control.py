@@ -3,7 +3,8 @@ import unittest
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from native_radio_control import (Command, NativeRadioPublisher, RadioState,
+from native_radio_control import (AWDLState, Command, NativeRadioPublisher,
+                                  RadioState, decode_awdl_state,
                                   decode_command, decode_leave_command, state_for, NOT_READY,
                                   ACTION_FRAME, ETHERNET_FRAME,
                                   frame_for_service_rx, latest_controller_service,
@@ -178,6 +179,33 @@ class NativeRadioControlTests(unittest.TestCase):
                         Command(2, 1, 0, 1), Command(2, 1, 1, 2)):
             with self.assertRaises(ValueError):
                 decode_command(command)
+
+    def test_decodes_bounded_awdl_state(self):
+        state = AWDLState()
+        state.version = VERSION
+        state.sequence = 9
+        state.enabled = 1
+        state.channel = 149
+        state.mac[:] = bytes.fromhex('061122334455')
+        self.assertEqual(decode_awdl_state(state), {
+            'sequence': 9, 'enabled': True, 'channel': 149,
+            'mac': bytes.fromhex('061122334455')})
+        state.channel = 0
+        with self.assertRaises(ValueError):
+            decode_awdl_state(state)
+
+    def test_reads_awdl_state_from_selector_14(self):
+        state = AWDLState()
+        state.version = VERSION
+        state.sequence = 3
+        state.enabled = 0
+        state.channel = 44
+        state.mac[:] = bytes.fromhex('061122334455')
+        io = FakeIOKit(command=state)
+        result = NativeRadioPublisher(io, 7).next_awdl_state()
+        self.assertEqual(result['sequence'], 3)
+        self.assertFalse(result['enabled'])
+        self.assertEqual(io.calls[0][:3], (7, 14, 0))
 
     def test_typed_eth_and_action_frames(self):
         ethernet = frame_for_service_rx(ETHERNET_FRAME, bytes(14), 1, 0)

@@ -12,7 +12,7 @@ from layouts import (NATIVE_PASSIVE_CHANNELS_24GHZ,
                      channel_to_frequency, frequency_to_channel)
 
 
-VERSION = 5
+VERSION = 6
 MAX_IES = 1024
 
 

@@ -6,7 +6,7 @@ from layouts import channel_to_frequency
 from wpa2 import validate_rsn
 
 
-VERSION = 5
+VERSION = 6
 
 
 class JoinRequest(c.Structure):

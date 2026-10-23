@@ -72,7 +72,7 @@ class NativeScanBridgeTests(unittest.TestCase):
         result = encode_result(9, item)
         payload = bytes(result.data[:result.length])
         self.assertEqual((result.version, result.sequence, result.length),
-                         (5, 9, 64 + len(ies)))
+                         (VERSION, 9, 64 + len(ies)))
         self.assertEqual(struct.unpack_from('<I', payload, 0)[0], len(ies))
         self.assertEqual(struct.unpack_from('<H', payload, 4)[0], 0xd02c)
         self.assertEqual(payload[6:9], b'AIC')

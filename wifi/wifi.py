@@ -19,6 +19,7 @@ from layouts import passive_scan,network,association_diagnostics,connect_request
 from reports import write_report
 from wpa2 import (Supplicant,pmk,ethernet_frames,transmit_frame,
                   aggregate_transmit_frames,key_request,parse_key,validate_rsn)
+from management import action_frames, transmit_action_frame
 
 HERE=Path(__file__).resolve().parent
 USB_DATA_READ_DEPTH=16
@@ -76,6 +77,7 @@ class Wifi:
         self.radio_observer=None;self.association_observer=None;self.lease_observer=None
         self.write_auth_report=True
         self.scan_requested=threading.Event();self.active_vif=None
+        self.native_action_frames=deque()
         self.connected_scan=False;self.connected_scan_deadline=0;self.connected_results={}
         self.rx_diagnostics={'records':0,'malformed':0,'ethernet_frames':0,
                              'ethernet_bytes':0,
@@ -208,7 +210,41 @@ class Wifi:
             data=self.data_read(0)
             if not data:break
             frames.extend(self.decode_data(data))
+            try:
+                self.native_action_frames.extend(action_frames(data))
+            except ValueError:
+                self.rx_diagnostics['malformed']+=1
         return frames
+
+    def take_native_action_frames(self):
+        frames=tuple(self.native_action_frames)
+        self.native_action_frames.clear()
+        return frames
+
+    def add_p2p_interface(self,mac):
+        if not isinstance(mac,bytes) or len(mac)!=6 or mac[0]&1 or not any(mac):
+            raise ValueError('Invalid AIC P2P MAC')
+        body=self.request(6,struct.pack('<Bx6sBx',0,mac,1))
+        if len(body)<2 or body[0]!=0 or body[1]>=4:
+            raise RuntimeError('AIC P2P interface creation failed: '+body[:2].hex())
+        return body[1]
+
+    def remove_interface(self,vif):
+        if not isinstance(vif,int) or not 0<=vif<4:
+            raise ValueError('Invalid AIC VIF index')
+        self.request(8,bytes([vif]))
+
+    def action_write(self,frame,vif,source_mac):
+        index=self.tx_sequence
+        if not 0<=index<(1<<31):
+            raise RuntimeError('AIC action TX sequence exhausted')
+        self.tx_sequence+=1
+        packet=transmit_action_frame(frame,vif,source_mac,index)
+        status=self.lib.wifi_write_data(
+            self.handle,ctypes.create_string_buffer(packet),len(packet))
+        if status:
+            raise RuntimeError('USB action write: %08x'%status)
+        return True
 
     def request(self,message_id,payload=b'',confirmation=None):
         frame=command(message_id,payload)

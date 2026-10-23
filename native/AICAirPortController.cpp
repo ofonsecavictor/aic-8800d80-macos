@@ -36,6 +36,8 @@ struct packet_info_tx;
 #include "AICNativeCapabilityBits.h"
 #include "AICNativeStartupPolicy.h"
 #include "AICNativeVirtualInterfacePolicy.h"
+#include "AICNativeAWDLMailbox.h"
+#include "AICNativeActionFrame.h"
 #include "AICNativeBridgeUserClient.h"
 #include "AICNativeEthernetInterface.h"
 #include "AICSkywalkQueueABI.h"
@@ -136,6 +138,8 @@ public:
     SInt32 disableVirtualInterface(IO80211VirtualInterface *interface) override;
     IO80211VirtualInterface *createVirtualInterface(
         ether_addr *address, unsigned int role) override;
+    int bpfOutputPacket(OSObject *object, unsigned int dataLinkType,
+                        mbuf_t packet) override;
     bool isCommandProhibited(int command) override;
     IOReturn getHardwareAddress(IOEthernetAddress *address) override;
     SInt32 handleCardSpecific(IO80211SkywalkInterface *interface,
@@ -190,6 +194,7 @@ public:
                           const AICNativeJoinCompletion &completion);
     IOReturn requestLeave();
     IOReturn nextLeaveCommand(IOUserClient *client, AICNativeCommand *command);
+    IOReturn nextAWDLState(AICNativeAWDLState *state);
     UInt32 outputPacket(mbuf_t packet, void *parameter) override;
 
 private:
@@ -242,6 +247,11 @@ private:
     AICWCLBssCache bssCache;
     AICNativeJoinMailbox joinMailbox;
     AICNativeLeaveMailbox leaveMailbox;
+    AICNativeAWDLMailbox awdlMailbox;
+    IO80211VirtualInterface *awdlInterface = nullptr;
+    uint8_t awdlMac[6] = {};
+    uint32_t awdlChannel = 0;
+    bool awdlEnabled = false;
     bool scanBridgeEnabled = false;
     IOUserClient *scanOwner = nullptr; // Cleared by owner close or controller teardown.
     uint32_t transmitSequence = 0;
@@ -309,8 +319,15 @@ void AICAirPortController::free() {
         IOLockLock(stateLock);
         receivedFrames.clear();
         transmitFrames.clear();
+        awdlMailbox.clear();
+        IO80211VirtualInterface *awdl = awdlInterface;
+        awdlInterface = nullptr;
+        awdlEnabled = false;
+        awdlChannel = 0;
+        bzero(awdlMac, sizeof(awdlMac));
         bzero(&radioState, sizeof(radioState));
         IOLockUnlock(stateLock);
+        if (awdl) awdl->release();
         IOLockFree(stateLock);
         stateLock = nullptr;
     }
@@ -418,10 +435,24 @@ SInt32 AICAirPortController::enableVirtualInterface(
     if (!stateLock) return kIOReturnNotReady;
     IOLockLock(stateLock);
     const bool ready = stateReady && radioState.powered;
+    const uint32_t channel = radioState.channel ? radioState.channel : 6;
+    const bool owned = awdlInterface == interface;
     IOLockUnlock(stateLock);
-    if (!ready) return kIOReturnNotReady;
+    if (!ready || !owned) return kIOReturnNotReady;
     const SInt32 status = IO80211Controller::enableVirtualInterface(interface);
     if (status != kIOReturnSuccess) return status;
+    IOLockLock(stateLock);
+    const bool published = awdlInterface == interface &&
+        awdlMailbox.publish(awdlMac, true, channel);
+    if (published) {
+        awdlEnabled = true;
+        awdlChannel = channel;
+    }
+    IOLockUnlock(stateLock);
+    if (!published) {
+        IO80211Controller::disableVirtualInterface(interface);
+        return kIOReturnNotReady;
+    }
     AICVirtualInterfaceSetEnabled(interface, true);
     AICVirtualInterfaceSetLinkState(interface, kIO80211NetworkLinkUp, 0);
     AICVirtualInterfacePostMessage(
@@ -434,6 +465,13 @@ SInt32 AICAirPortController::disableVirtualInterface(
     IO80211VirtualInterface *interface) {
     if (!interface || interface->getProperty("AICNativeAWDL") != kOSBooleanTrue)
         return kIOReturnUnsupported;
+    if (!stateLock) return kIOReturnNotReady;
+    IOLockLock(stateLock);
+    const bool published = awdlInterface == interface &&
+        awdlMailbox.publish(awdlMac, false, awdlChannel);
+    if (published) awdlEnabled = false;
+    IOLockUnlock(stateLock);
+    if (!published) return kIOReturnNotReady;
     const SInt32 status = IO80211Controller::disableVirtualInterface(interface);
     if (status != kIOReturnSuccess) return status;
     AICVirtualInterfaceSetLinkState(interface, kIO80211NetworkLinkDown, 0);
@@ -465,8 +503,62 @@ IO80211VirtualInterface *AICAirPortController::createVirtualInterface(
         interface->release();
         return nullptr;
     }
+    if (!stateLock) {
+        interface->release();
+        return nullptr;
+    }
+    interface->retain();
+    IOLockLock(stateLock);
+    IO80211VirtualInterface *previous = awdlInterface;
+    awdlInterface = interface;
+    bcopy(address, awdlMac, sizeof(awdlMac));
+    awdlEnabled = false;
+    awdlChannel = radioState.channel;
+    const bool published = awdlMailbox.publish(awdlMac, false, awdlChannel);
+    IOLockUnlock(stateLock);
+    if (previous) previous->release();
+    if (!published) {
+        IOLockLock(stateLock);
+        awdlInterface = nullptr;
+        bzero(awdlMac, sizeof(awdlMac));
+        IOLockUnlock(stateLock);
+        interface->release(); // Controller retain.
+        interface->release(); // Allocation returned on failure.
+        return nullptr;
+    }
     IOLog("AICNative: created AWDL virtual interface\n");
     return interface;
+}
+
+int AICAirPortController::bpfOutputPacket(OSObject *object,
+                                          unsigned int dataLinkType,
+                                          mbuf_t packet) {
+    if (!packet) return 1;
+    const size_t length = (mbuf_flags(packet) & MBUF_PKTHDR)
+        ? mbuf_pkthdr_len(packet) : mbuf_len(packet);
+    uint8_t payload[512] = {};
+    uint8_t source[6] = {};
+    uint32_t channel = 0;
+    uint32_t sequence = 0;
+    bool ready = false;
+    if (stateLock && dataLinkType == DLT_RAW && length <= sizeof(payload) &&
+        mbuf_copydata(packet, 0, length, payload) == 0) {
+        IOLockLock(stateLock);
+        ready = awdlEnabled && awdlInterface == object && awdlChannel != 0;
+        if (ready) {
+            bcopy(awdlMac, source, sizeof(source));
+            channel = awdlChannel;
+            if (++transmitSequence == 0) ++transmitSequence;
+            sequence = transmitSequence;
+        }
+        IOLockUnlock(stateLock);
+    }
+    AICNativeFrame frame = {};
+    const bool accepted = ready && AICPrepareActionTransmit(
+        &frame, payload, length, sequence, 1, channel, source) &&
+        queueTransmitFrame(frame) == kIOReturnSuccess;
+    mbuf_freem(packet);
+    return accepted ? 0 : 1;
 }
 
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
@@ -1386,6 +1478,14 @@ IOReturn AICAirPortController::nextCommand(AICNativeCommand *command) {
     return kIOReturnSuccess;
 }
 
+IOReturn AICAirPortController::nextAWDLState(AICNativeAWDLState *state) {
+    if (!state || !stateLock) return kIOReturnBadArgument;
+    IOLockLock(stateLock);
+    const bool available = awdlMailbox.read(state);
+    IOLockUnlock(stateLock);
+    return available ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
 IOReturn AICAirPortController::submitReceivedFrame(
     const AICNativeFrame &frame) {
     if (!stateLock || !AICNativeFrameValid(frame, true))
@@ -1423,10 +1523,21 @@ IOReturn AICAirPortController::submitReceivedFrame(
         target->release();
         return kIOReturnSuccess;
     }
+    IO80211VirtualInterface *target = nullptr;
     IOLockLock(stateLock);
-    const bool queued = receivedFrames.push(frame, true);
+    if (awdlEnabled && awdlInterface) {
+        target = awdlInterface;
+        target->retain();
+    }
     IOLockUnlock(stateLock);
-    return queued ? kIOReturnSuccess : kIOReturnNoSpace;
+    if (!target) return kIOReturnNotReady;
+    // IO80211 copies the bounded action payload while posting the synchronous
+    // message; peer data is never persisted by the driver.
+    AICVirtualInterfacePostMessage(target, APPLE80211_M_ACTION_FRAME,
+                                   const_cast<uint8_t *>(frame.data),
+                                   frame.length, true);
+    target->release();
+    return kIOReturnSuccess;
 }
 
 IOReturn AICAirPortController::nextReceivedFrame(AICNativeFrame *frame) {
@@ -1559,6 +1670,14 @@ extern "C" IOReturn AICNativeNextCommand(
     AICAirPortController *controller = OSDynamicCast(AICAirPortController, service);
     if (!controller) return kIOReturnBadArgument;
     return controller->nextCommand(command);
+}
+
+extern "C" IOReturn AICNativeNextAWDLState(
+    IOService *service, AICNativeAWDLState *state) {
+    if (!service || !state) return kIOReturnBadArgument;
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->nextAWDLState(state)
+                      : kIOReturnBadArgument;
 }
 
 extern "C" IOReturn AICNativeBeginScan(

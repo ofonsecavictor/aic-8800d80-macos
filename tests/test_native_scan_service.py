@@ -3,7 +3,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from native_radio_control import NativeScanNotReady
-from native_radio_control import ETHERNET_FRAME, frame_for_service_rx
+from native_radio_control import (ACTION_FRAME, ETHERNET_FRAME,
+                                  frame_for_service_rx)
 from native_scan_service import (NativeLeaveRequested, NativeScanSession,
                                  SCAN_ABORTED, SCAN_FAILED)
 
@@ -87,6 +88,7 @@ class FakeJoinWifi(FakeWifi):
     def __init__(self):
         super().__init__()
         self.tx_diagnostics = {'data_submitted': 0}
+        self.native_actions = []
 
     def scan(self, ssid, key, *, scan_frequencies, publish_results):
         self.calls.append(('join_scan', ssid, len(key), scan_frequencies,
@@ -113,6 +115,25 @@ class FakeJoinWifi(FakeWifi):
                            require_confirmation, sample_confirmation))
         self.tx_diagnostics['data_submitted'] += 1
 
+    def take_native_action_frames(self):
+        frames, self.native_actions = tuple(self.native_actions), []
+        return frames
+
+    def add_p2p_interface(self, mac):
+        self.calls.append(('p2p_add', mac))
+        return 1
+
+    def remove_interface(self, vif):
+        self.calls.append(('vif_remove', vif))
+
+    def request(self, message, payload=b'', confirmation=None):
+        self.calls.append(('request', message, payload, confirmation))
+        return b''
+
+    def action_write(self, frame, vif, source_mac):
+        self.calls.append(('action_tx', frame, vif, source_mac))
+        return True
+
 
 class FakeJoinBridge(FakeBridge):
     def __init__(self):
@@ -124,6 +145,7 @@ class FakeJoinBridge(FakeBridge):
         self.scan_request = None
         self.leave_after_complete = None
         self.power_after_complete = None
+        self.awdl_state = None
 
     def next_scan_request(self):
         request, self.scan_request = self.scan_request, None
@@ -132,6 +154,10 @@ class FakeJoinBridge(FakeBridge):
     def next_join_request(self):
         join, self.join = self.join, None
         return join
+
+    def next_awdl_state(self):
+        state, self.awdl_state = self.awdl_state, None
+        return state
 
     def complete_join(self, sequence, status_code=0):
         self.calls.append(('join_complete', sequence, status_code))
@@ -241,6 +267,32 @@ class NativeScanServiceTests(unittest.TestCase):
         session.execute_join(request)
         self.assertTrue(any(call[0] == 'tx' and call[-1] is True
                             for call in wifi.calls))
+
+    def test_connected_session_bridges_awdl_action_rx_and_tx(self):
+        wifi = FakeJoinWifi()
+        bridge = FakeJoinBridge()
+        awdl_mac = bytes.fromhex('061122334455')
+        action = bytearray(40)
+        action[0] = 0xd0
+        action[10:16] = awdl_mac
+        action[24] = 127
+        wifi.native_actions = [(255, bytes(action))]
+        bridge.awdl_state = {'sequence': 4, 'enabled': True, 'channel': 44,
+                             'mac': awdl_mac}
+        bridge.outgoing = frame_for_service_rx(
+            ACTION_FRAME, bytes(action), 9, 1, 44)
+        session = NativeScanSession(wifi, bridge, threading.Event())
+        request = {'sequence': 8, 'ssid': 'test',
+                   'bssid': '02:11:22:33:44:55', 'frequency': 5220,
+                   'key': b'k' * 32, 'rsn': '', 'station_mac': wifi.mac}
+        session.execute_join(request)
+        self.assertIn(('p2p_add', awdl_mac), wifi.calls)
+        self.assertTrue(any(call[0] == 'request' and call[1] == 14
+                            for call in wifi.calls))
+        self.assertIn(('action_tx', bytes(action), 1, awdl_mac), wifi.calls)
+        self.assertIn(('vif_remove', 1), wifi.calls)
+        self.assertTrue(any(call[0] == 'rx' and call[1] == bytes(action)
+                            for call in bridge.calls))
 
     def test_busy_data_batch_does_not_sleep_before_draining_next_batch(self):
         wifi = FakeJoinWifi()
