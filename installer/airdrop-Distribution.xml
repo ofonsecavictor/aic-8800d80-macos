@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+  <title>AIC 8800D80 — AirDrop experimental 1.4.0-airdrop.2</title>
+  <readme file="LEIA-ME-AIRDROP.txt"/>
+  <organization>local.victor</organization>
+  <domains enable_localSystem="true" enable_anywhere="false" enable_currentUserHome="false"/>
+  <options customize="never" require-scripts="true" hostArchitectures="x86_64"/>
+  <installation-check script="checkCompatibility()"/>
+  <script><![CDATA[
+    function checkCompatibility() {
+      if (system.version.ProductVersion.indexOf('15.') !== 0) {
+        my.result.title='macOS incompatível';
+        my.result.message='Esta prévia exige macOS 15 em Hackintosh Intel.';
+        return false;
+      }
+      return true;
+    }
+  ]]></script>
+  <choices-outline><line choice="default"><line choice="native"/></line></choices-outline>
+  <choice id="default"/>
+  <choice id="native" visible="false"><pkg-ref id="local.victor.AIC8800D80.Native"/></choice>
+  <pkg-ref id="local.victor.AIC8800D80.Native" version="1.4.0-airdrop.2" onConclusion="RequireRestart">AIC8800D80-native-airdrop-component.pkg</pkg-ref>
+</installer-gui-script>

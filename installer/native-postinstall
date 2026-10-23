@@ -21,7 +21,7 @@ from pathlib import Path
 print(json.loads(Path('/Library/Application Support/AIC88M80Driver/native-release.json').read_text()).get('version', ''))
 PY
 )
-    if [ "$installed_version" = 0.0.15 ] || [ "$installed_version" = 0.0.16 ] || [ "$installed_version" = 0.0.17 ]; then
+    if [ "$installed_version" != 0.0.19 ]; then
         /usr/bin/python3 "$support/NativeMode/native_upgrade.py" \
             "$support/NativeMode/AICNativeProbe.kext"
     else

@@ -1,0 +1,13 @@
+AIC 8800D80 — AirDrop experimental 1.4.0-airdrop.2
+
+Esta prévia instala o driver nativo 0.0.19 e a ponte inicial AWDL para o
+firmware AIC. Ela existe para validar a criação da interface awdl0 e o caminho
+de quadros de descoberta sem remover o Wi-Fi nativo estável.
+
+O instalador atualiza uma instalação 0.0.18 registrada, cria uma cópia exata
+do kext anterior e preserva a imagem externa de recuperação. O aplicativo
+Voltar ao AIC continua sendo o caminho de rollback.
+
+Esta é uma compilação experimental: a transferência de arquivos AirDrop ainda
+não está declarada como funcional. Após reiniciar, os gates são ausência de
+kernel panic, Wi-Fi normal preservado e existência da interface awdl0.

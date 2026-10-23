@@ -21,7 +21,7 @@ import time
 SUPPORT = Path('/Library/Application Support/AIC88M80Driver')
 KEXT_NAME = 'AICNativeProbe.kext'
 BUNDLE_ID = 'local.victor.AICNativeProbe'
-VERSION = '0.0.18'
+VERSION = '0.0.19'
 RECORD = SUPPORT / 'native-release.json'
 PROFILE = SUPPORT / 'wifi/profile.json'
 RECOVERY_IMAGE = Path('/Volumes/1401/AIC-EFI-backup-2026-10-22.JNSOPthj/efi-disk0s4.img')

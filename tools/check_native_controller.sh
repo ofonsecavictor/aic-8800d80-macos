@@ -5,25 +5,32 @@ set -eu
 if [ "$#" -lt 2 ] || [ "$#" -gt 3 ] ||
     { [ "$#" -eq 3 ] && [ "$3" != '--diagnose' ] &&
       [ "$3" != '--stage-load-only' ] &&
-      [ "$3" != '--stage-usb-test' ]; } ||
+      [ "$3" != '--stage-usb-test' ] &&
+      [ "$3" != '--stage-usb-offline' ]; } ||
     [ ! -f "$1/macOS15/IO80211ControllerV2.h" ] ||
     [ ! -f "$1/apple_private_spi.h" ] || [ ! -f "$2/IOKit/IOService.h" ] ||
     [ ! -f "$(dirname "$2")/Library/x86_64/libkmod.a" ]; then
     echo 'Uso: sh tools/check_native_controller.sh /caminho/itlwm-Sequoia/include/Airport /caminho/MacKernelSDK/Headers [--diagnose|--stage-load-only|--stage-usb-test]' >&2
     exit 2
 fi
-if [ "$#" -eq 3 ] && [ "$(/usr/bin/id -u)" -ne 0 ]; then
+if [ "$#" -eq 3 ] && [ "$3" != '--stage-usb-offline' ] &&
+    [ "$(/usr/bin/id -u)" -ne 0 ]; then
     echo 'O diagnóstico kmutil exige pacote temporário root:wheel. Execute a checagem com sudo; nada será instalado ou carregado.' >&2
     exit 2
 fi
 keep_native=0
 stage_load_only=0
 stage_usb_test=0
+offline_stage=0
 if [ "$#" -eq 3 ] && [ "$3" = '--stage-load-only' ]; then
     stage_load_only=1
 fi
 if [ "$#" -eq 3 ] && [ "$3" = '--stage-usb-test' ]; then
     stage_usb_test=1
+fi
+if [ "$#" -eq 3 ] && [ "$3" = '--stage-usb-offline' ]; then
+    stage_usb_test=1
+    offline_stage=1
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -294,15 +301,19 @@ if [ "$#" -eq 3 ]; then
             exit 1
         fi
     fi
-    if ! /usr/bin/kmutil print-diagnostics -Z -z -p "$native_bundle" > "$stage/diagnostics.txt" 2>&1; then
+    if [ "$offline_stage" -eq 0 ]; then
+        if ! /usr/bin/kmutil print-diagnostics -Z -z -p "$native_bundle" > "$stage/diagnostics.txt" 2>&1; then
+            /bin/cat "$stage/diagnostics.txt"
+            echo 'Diagnóstico do kext falhou; não carregar este pacote.' >&2
+            exit 1
+        fi
         /bin/cat "$stage/diagnostics.txt"
-        echo 'Diagnóstico do kext falhou; não carregar este pacote.' >&2
-        exit 1
-    fi
-    /bin/cat "$stage/diagnostics.txt"
-    if /usr/bin/grep -Eq '^Error:|^[[:space:]]+Filesystem error:' "$stage/diagnostics.txt"; then
-        echo 'Diagnóstico do kext falhou; não carregar este pacote.' >&2
-        exit 1
+        if /usr/bin/grep -Eq '^Error:|^[[:space:]]+Filesystem error:' "$stage/diagnostics.txt"; then
+            echo 'Diagnóstico do kext falhou; não carregar este pacote.' >&2
+            exit 1
+        fi
+    else
+        echo 'Validação kmutil privilegiada adiada para antes da instalação.'
     fi
     if [ "$stage_load_only" -eq 1 ] || [ "$stage_usb_test" -eq 1 ]; then
         keep_native=1

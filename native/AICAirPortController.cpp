@@ -467,13 +467,17 @@ SInt32 AICAirPortController::disableVirtualInterface(
         return kIOReturnUnsupported;
     if (!stateLock) return kIOReturnNotReady;
     IOLockLock(stateLock);
+    const bool owned = awdlInterface == interface;
+    IOLockUnlock(stateLock);
+    if (!owned) return kIOReturnNotReady;
+    const SInt32 status = IO80211Controller::disableVirtualInterface(interface);
+    if (status != kIOReturnSuccess) return status;
+    IOLockLock(stateLock);
     const bool published = awdlInterface == interface &&
         awdlMailbox.publish(awdlMac, false, awdlChannel);
     if (published) awdlEnabled = false;
     IOLockUnlock(stateLock);
     if (!published) return kIOReturnNotReady;
-    const SInt32 status = IO80211Controller::disableVirtualInterface(interface);
-    if (status != kIOReturnSuccess) return status;
     AICVirtualInterfaceSetLinkState(interface, kIO80211NetworkLinkDown, 0);
     AICVirtualInterfaceSetEnabled(interface, false);
     AICVirtualInterfacePostMessage(
@@ -1297,7 +1301,7 @@ SInt32 AICAirPortController::handleCardSpecific(
 IOReturn AICAirPortController::getDRIVER_VERSION(
     IO80211SkywalkInterface *, apple80211_version_data *data) {
     if (!data) return kIOReturnBadArgument;
-    static const char driverVersion[] = "AIC 8800D80 native 0.0.18";
+    static const char driverVersion[] = "AIC 8800D80 native 0.0.19-airdrop.2";
     static_assert(sizeof(driverVersion) <= sizeof(data->string), "driver version too long");
     bzero(data, sizeof(*data));
     data->version = APPLE80211_VERSION;
@@ -1327,9 +1331,11 @@ IOReturn AICAirPortController::getCARD_CAPABILITIES(
     // CoreWLAN even though the IOService/BSD interface remains registered.
     bzero(data, sizeof(*data));
     data->version = APPLE80211_VERSION;
-    // Only WPA2/CCMP has been exercised with this dongle. Do not advertise
-    // AWDL, WPA3, monitor, or WEP. The scan bridge now delivers completion
-    // through WCL; without this Sequoia capability bit, Apple80211Scan does
+    // Only WPA2/CCMP has been exercised with this dongle. The legacy card
+    // capability bitmap has no AWDL bit; AWDL is negotiated through a
+    // separately-created virtual interface. Do not advertise WPA3, monitor,
+    // or WEP. The scan bridge now delivers completion through WCL; without
+    // this Sequoia capability bit, Apple80211Scan does
     // not monitor the completion event and discards the native scan.
     if (!AICSetNativeCapability(data->capabilities,
                                 sizeof(data->capabilities),
@@ -1985,4 +1991,4 @@ extern "C" {
 kmod_start_func_t *_realmain = nullptr;
 kmod_stop_func_t *_antimain = nullptr;
 }
-KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.18", _start, _stop)
+KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.19", _start, _stop)

@@ -60,3 +60,6 @@ class NativeUpgradeTests(unittest.TestCase):
 
     def test_upgrade_from_panic_version_0017(self):
         self.exercise(previous_version='0.0.17')
+
+    def test_upgrade_from_stable_0018(self):
+        self.exercise(previous_version='0.0.18')

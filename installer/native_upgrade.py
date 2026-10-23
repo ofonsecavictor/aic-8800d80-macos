@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update a registered AIC 0.0.15/0.0.16 installation to the current release.
+"""Update a registered older AIC native installation to the current release.
 
 This deliberately refuses every other starting point.  The OpenCore entry and
 its original pre-native backup remain unchanged; only the bundle bytes and the
@@ -18,7 +18,7 @@ from native_release import (BUNDLE_ID, PROFILE, RECORD, SUPPORT, VERSION,
                             validate_bundle, write_profile)
 
 
-PREVIOUS_VERSIONS = ('0.0.15', '0.0.16', '0.0.17')
+PREVIOUS_VERSIONS = ('0.0.15', '0.0.16', '0.0.17', '0.0.18')
 
 
 def atomic_record(record):
@@ -43,7 +43,7 @@ def upgrade(candidate):
     previous_version = record.get('version')
     original_record = dict(record)
     if previous_version not in PREVIOUS_VERSIONS:
-        raise RuntimeError('A atualização requer o nativo 0.0.15, 0.0.16 ou 0.0.17')
+        raise RuntimeError('A atualização requer um nativo entre 0.0.15 e 0.0.18')
     validate_bundle(candidate)
     device, oc, mounted_here = boot_efi()
     destination = oc / 'Kexts' / 'AICNativeProbe.kext'
