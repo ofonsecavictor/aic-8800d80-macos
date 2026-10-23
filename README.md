@@ -10,6 +10,11 @@ A versão estável atual é a **v1.3.5**, com driver nativo **0.0.18**.
 
 **[Baixar o instalador completo v1.3.5](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.3.5)**
 
+O desenvolvimento inicial de AWDL/AirDrop está disponível como código na
+**[prévia experimental v1.4.0-airdrop.1](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.4.0-airdrop.1)**.
+Ela ainda não oferece AirDrop funcional nem instalador; a v1.3.5 continua sendo
+a versão recomendada.
+
 > **Atenção:** o instalador modifica a EFI/OpenCore usada no boot. Tenha um
 > backup completo da EFI e um pendrive de recuperação funcional. O pacote foi
 > validado em uma única máquina, não possui assinatura Developer ID nem
@@ -143,6 +148,11 @@ OpenCore. The current stable release is **v1.3.5**, with native driver
 **0.0.18**.
 
 **[Download the complete v1.3.5 installer](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.3.5)**
+
+Early AWDL/AirDrop development is available as source code in the
+**[v1.4.0-airdrop.1 experimental preview](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.4.0-airdrop.1)**.
+It does not provide working AirDrop or an installer yet; v1.3.5 remains the
+recommended release.
 
 > **Warning:** the installer modifies the boot EFI/OpenCore configuration.
 > Keep a complete EFI backup and a working recovery USB drive. The package was

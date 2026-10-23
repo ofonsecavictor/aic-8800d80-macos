@@ -6,6 +6,15 @@
 // retains ownership of the dongle.
 
 #include <IO80211ControllerV2.h>
+// The pinned macOS 15 controller header already includes the Skywalk packet
+// types. The legacy include pulled by IO80211VirtualInterface.h redeclares
+// TxPacketRequest, so suppress only that redundant header while retaining the
+// full virtual-interface ABI declaration.
+struct apple80211_pmk_cache_data;
+struct packet_info_tx;
+#define _IO80211INTERFACE_H
+#include <IO80211VirtualInterface.h>
+#undef _IO80211INTERFACE_H
 #include <Airport/macOS15/FaultReporter.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOCommandGate.h>
@@ -26,6 +35,7 @@
 #include "AICNativeFrameMailbox.h"
 #include "AICNativeCapabilityBits.h"
 #include "AICNativeStartupPolicy.h"
+#include "AICNativeVirtualInterfacePolicy.h"
 #include "AICNativeBridgeUserClient.h"
 #include "AICNativeEthernetInterface.h"
 #include "AICSkywalkQueueABI.h"
@@ -88,6 +98,19 @@ extern "C" IO80211WorkQueue *AICDefaultWorkQueue()
     __asm__("__ZN16IO80211WorkQueue19getDefaultWorkQueueEv");
 extern "C" void AICSetDefaultWorkQueue(IO80211WorkQueue *)
     __asm__("__ZN16IO80211WorkQueue19setDefaultWorkQueueEPS_");
+extern "C" bool AICVirtualInterfaceInit(
+    IO80211VirtualInterface *, IO80211Controller *, ether_addr *,
+    unsigned int, const char *)
+    __asm__("__ZN23IO80211VirtualInterface4initEP17IO80211ControllerP10ether_addrjPKc");
+extern "C" void AICVirtualInterfaceSetEnabled(
+    IO80211VirtualInterface *, bool)
+    __asm__("__ZN23IO80211VirtualInterface18setInterfaceEnableEb");
+extern "C" void AICVirtualInterfaceSetLinkState(
+    IO80211VirtualInterface *, IO80211LinkState, unsigned int)
+    __asm__("__ZN23IO80211VirtualInterface12setLinkStateE16IO80211LinkStatej");
+extern "C" void AICVirtualInterfacePostMessage(
+    IO80211VirtualInterface *, unsigned int, void *, unsigned long, bool)
+    __asm__("__ZN23IO80211VirtualInterface11postMessageEjPvmb");
 
 void AICNativeUSBProvider::free() {
     if (queue && AICDefaultWorkQueue() == queue)
@@ -109,6 +132,10 @@ public:
     bool start(IOService *provider) override;
     void stop(IOService *provider) override;
     IONetworkInterface *createInterface() override;
+    SInt32 enableVirtualInterface(IO80211VirtualInterface *interface) override;
+    SInt32 disableVirtualInterface(IO80211VirtualInterface *interface) override;
+    IO80211VirtualInterface *createVirtualInterface(
+        ether_addr *address, unsigned int role) override;
     bool isCommandProhibited(int command) override;
     IOReturn getHardwareAddress(IOEthernetAddress *address) override;
     SInt32 handleCardSpecific(IO80211SkywalkInterface *interface,
@@ -382,6 +409,64 @@ IONetworkInterface *AICAirPortController::createInterface() {
 #else
     return nullptr;
 #endif
+}
+
+SInt32 AICAirPortController::enableVirtualInterface(
+    IO80211VirtualInterface *interface) {
+    if (!interface || interface->getProperty("AICNativeAWDL") != kOSBooleanTrue)
+        return kIOReturnUnsupported;
+    if (!stateLock) return kIOReturnNotReady;
+    IOLockLock(stateLock);
+    const bool ready = stateReady && radioState.powered;
+    IOLockUnlock(stateLock);
+    if (!ready) return kIOReturnNotReady;
+    const SInt32 status = IO80211Controller::enableVirtualInterface(interface);
+    if (status != kIOReturnSuccess) return status;
+    AICVirtualInterfaceSetEnabled(interface, true);
+    AICVirtualInterfaceSetLinkState(interface, kIO80211NetworkLinkUp, 0);
+    AICVirtualInterfacePostMessage(
+        interface, APPLE80211_M_LINK_CHANGED, nullptr, 0, true);
+    IOLog("AICNative: AWDL virtual interface enabled\n");
+    return kIOReturnSuccess;
+}
+
+SInt32 AICAirPortController::disableVirtualInterface(
+    IO80211VirtualInterface *interface) {
+    if (!interface || interface->getProperty("AICNativeAWDL") != kOSBooleanTrue)
+        return kIOReturnUnsupported;
+    const SInt32 status = IO80211Controller::disableVirtualInterface(interface);
+    if (status != kIOReturnSuccess) return status;
+    AICVirtualInterfaceSetLinkState(interface, kIO80211NetworkLinkDown, 0);
+    AICVirtualInterfaceSetEnabled(interface, false);
+    AICVirtualInterfacePostMessage(
+        interface, APPLE80211_M_LINK_CHANGED, nullptr, 0, true);
+    IOLog("AICNative: AWDL virtual interface disabled\n");
+    return kIOReturnSuccess;
+}
+
+IO80211VirtualInterface *AICAirPortController::createVirtualInterface(
+    ether_addr *address, unsigned int role) {
+    static_assert(APPLE80211_VIF_AWDL == kAICVirtualInterfaceRoleAWDL,
+                  "macOS 15 AWDL virtual-interface role changed");
+    if (!address || !AICSupportsVirtualInterface(
+            role, reinterpret_cast<const uint8_t *>(address),
+            sizeof(*address))) {
+        IOLog("AICNative: rejected virtual interface role=%u\n", role);
+        return nullptr;
+    }
+    auto *interface = OSTypeAlloc(IO80211VirtualInterface);
+    if (!interface) return nullptr;
+    if (!AICVirtualInterfaceInit(interface, this, address, role,
+                                 AICVirtualInterfacePrefix(role))) {
+        interface->release();
+        return nullptr;
+    }
+    if (!interface->setProperty("AICNativeAWDL", kOSBooleanTrue)) {
+        interface->release();
+        return nullptr;
+    }
+    IOLog("AICNative: created AWDL virtual interface\n");
+    return interface;
 }
 
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE

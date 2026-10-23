@@ -18,14 +18,21 @@ class PreflightTests(unittest.TestCase):
                 return "lo0 en0 utun40"
             if "IOUSB" in args:
                 return '"idVendor" = 42652\n"idProduct" = 36225\n'
+            if "IO80211SkywalkInterface" in args:
+                return '"IO80211InterfaceRole" = "Infrastructure"\n'
+            if "AICInfraInterface" in args:
+                return ('"IOClass" = "AICInfraInterface"\n'
+                        '"IOInterfaceName" = "en2"\n')
             return ""
 
         result = preflight.probe(run, capabilities={})
         self.assertEqual(result["aic_usb_stage"], "ready")
         self.assertFalse(result["awdl0_present"])
+        self.assertTrue(result["io80211_interface_present"])
+        self.assertTrue(result["aic_native_interface_present"])
         self.assertFalse(result["airdrop_proven"])
         self.assertEqual(result["next_gate"],
-                         "Implement and validate an AIC-backed native Wi-Fi interface.")
+                         "Create and validate an AIC-backed AWDL virtual interface.")
 
     def test_awdl_interface_does_not_prove_transfer(self):
         def run(*args):
@@ -33,14 +40,20 @@ class PreflightTests(unittest.TestCase):
                 return "lo0 en0 awdl0"
             if "IOUSB" in args:
                 return '"idVendor" = 42652\n"idProduct" = 36225\n'
-            return "IO80211Interface"
+            if "IO80211SkywalkInterface" in args:
+                return '"IO80211InterfaceRole" = "Infrastructure"\n'
+            if "AICInfraInterface" in args:
+                return ('"IOClass" = "AICInfraInterface"\n'
+                        '"IOInterfaceName" = "en2"\n')
+            return ""
 
         result = preflight.probe(run, capabilities={})
         self.assertTrue(result["awdl0_present"])
         self.assertTrue(result["io80211_interface_present"])
+        self.assertTrue(result["aic_native_interface_present"])
         self.assertFalse(result["airdrop_proven"])
         self.assertEqual(result["next_gate"],
-                         "Verify AIC ownership and native scan, association, and packet I/O.")
+                         "Validate AIC ownership and bidirectional AWDL/AirDrop traffic.")
 
     def test_other_usb_device_does_not_count_as_aic(self):
         def run(*args):
@@ -49,6 +62,22 @@ class PreflightTests(unittest.TestCase):
             return ""
 
         self.assertEqual(preflight.probe(run, capabilities={})["aic_usb_stage"], "not_found")
+
+    def test_legacy_native_check_does_not_hide_missing_aic_interface(self):
+        def run(*args):
+            if args[0] == "/sbin/ifconfig":
+                return "lo0 en0"
+            if "IOUSB" in args:
+                return '"idVendor" = 42652\n"idProduct" = 36225\n'
+            if "IO80211SkywalkInterface" in args:
+                return '"IO80211InterfaceRole" = "Infrastructure"\n'
+            return ""
+
+        result = preflight.probe(run, capabilities={})
+        self.assertTrue(result["io80211_interface_present"])
+        self.assertFalse(result["aic_native_interface_present"])
+        self.assertEqual(result["next_gate"],
+                         "Implement and validate an AIC-backed native Wi-Fi interface.")
 
     def test_capability_report_excludes_identifiers(self):
         import service

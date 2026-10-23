@@ -43,27 +43,38 @@ def read_capabilities(path=CAPABILITIES):
 def probe(run=command_output, capabilities=None):
     interfaces = set(run("/sbin/ifconfig", "-l").split())
     usb = run("/usr/sbin/ioreg", "-p", "IOUSB", "-l", "-n", "AIC 8800D80", "-r")
-    native = run("/usr/sbin/ioreg", "-r", "-c", "IO80211Interface", "-l")
+    native = run("/usr/sbin/ioreg", "-r", "-c",
+                 "IO80211SkywalkInterface", "-l")
+    aic_native = run("/usr/sbin/ioreg", "-r", "-c",
+                     "AICInfraInterface", "-l")
 
     vendor = bool(re.search(r'"idVendor"\s*=\s*42652\b', usb))
     ready = vendor and bool(re.search(r'"idProduct"\s*=\s*36225\b', usb))
     loader = vendor and bool(re.search(r'"idProduct"\s*=\s*36224\b', usb))
     usb_stage = "ready" if ready else "loader" if loader else "not_found"
     awdl = "awdl0" in interfaces
-    io80211 = "IO80211Interface" in native
+    # Sequoia uses IO80211SkywalkInterface/IO80211InfraProtocol for the
+    # primary native interface; checking only the legacy IO80211Interface
+    # class incorrectly reports the already-running AIC en2 as absent.
+    io80211 = "IO80211InterfaceRole" in native
+    aic_io80211 = ("AICInfraInterface" in aic_native and
+                   '"IOInterfaceName" = "en2"' in aic_native)
 
     return {
         "architecture": platform.machine(),
         "aic_usb_stage": usb_stage,
         "io80211_interface_present": io80211,
+        "aic_native_interface_present": aic_io80211,
         "awdl0_present": awdl,
         "firmware_capabilities": read_capabilities() if capabilities is None else capabilities,
         "airdrop_proven": False,
         # An IO80211Interface anywhere in the registry is not proof that the
         # AIC owns it or that scan, association, and packet I/O work.
         "next_gate": (
-            "Verify AIC ownership and native scan, association, and packet I/O."
-            if io80211 else
+            "Validate AIC ownership and bidirectional AWDL/AirDrop traffic."
+            if awdl else
+            "Create and validate an AIC-backed AWDL virtual interface."
+            if aic_io80211 else
             "Implement and validate an AIC-backed native Wi-Fi interface."
         ),
     }
