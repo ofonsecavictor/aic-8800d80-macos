@@ -2,250 +2,226 @@
 
 <a id="portugues"></a>
 
-# AIC 8800D80 Wi-Fi e Bluetooth para macOS
+# AIC 8800D80 Wi‑Fi nativo para macOS
 
-Projeto experimental para usar o dongle USB **AIC 8800D80** em um Hackintosh com macOS 15 Sequoia e OpenCore. A versão instalável atual é a **1.1.2**.
+Driver e instalador experimental para usar o dongle USB **AIC 8800D80** como
+interface Wi‑Fi nativa do macOS 15 Sequoia em Hackintosh Intel com OpenCore.
+A versão estável atual é a **v1.3.4**, com driver nativo **0.0.18**.
 
-**[Baixar o instalador completo v1.1.2](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.1.2)**
+**[Baixar o instalador completo v1.3.4](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.3.4)**
 
-> **Atenção:** o instalador modifica a EFI/OpenCore usada no boot. Faça um backup próprio da **EFI inteira** e tenha um meio alternativo de inicialização antes de instalar. O pacote não tem assinatura Developer ID da Apple. Este projeto foi testado em uma máquina; não é uma garantia de funcionamento em todo Hackintosh.
+> **Atenção:** o instalador modifica a EFI/OpenCore usada no boot. Tenha um
+> backup completo da EFI e um pendrive de recuperação funcional. O pacote foi
+> validado em uma única máquina, não possui assinatura Developer ID nem
+> notarização Apple e não deve ser tratado como driver universal.
+
+## Estado validado da v1.3.4
+
+- Interface nativa `en2`, reconhecida pelo menu Wi‑Fi e CoreWLAN do macOS.
+- Operação exclusivamente nativa no uso normal; o app/UTUN anterior permanece
+  instalado apenas para recuperação.
+- Associação WPA2‑PSK/CCMP em 5 GHz.
+- Recepção Wi‑Fi 6 (HE SU) em canal de 80 MHz.
+- Reconexão e funcionamento após reinicialização validados.
+- Máxima medida neste Hackintosh: **190,24 Mbps de download** e
+  **29,35 Mbps de upload** no Ookla Speedtest.
+- Durante o teste: zero registros USB malformados e zero descarte da fila RX.
+
+A velocidade não é garantida. Ela varia conforme sinal, interferência, canal,
+roteador, porta USB e servidor de teste.
 
 ## Compatibilidade
 
-O dongle é USB: o funcionamento do rádio não depende de um modelo específico de placa-mãe. Isso **não** significa que o pacote funcione em qualquer computador, macOS ou adaptador USB.
-
-| Ambiente | Estado na v1.1.2 |
+| Ambiente | Estado |
 | --- | --- |
-| Hackintosh Intel `x86_64`, macOS 15 Sequoia, OpenCore, mesmo AIC 8800D80 | Testado em **uma** máquina; outras configurações ainda não foram validadas. |
-| Hackintosh AMD `x86_64`, macOS 15 Sequoia, OpenCore, mesmo AIC 8800D80 | **Potencialmente compatível, não testado.** A checagem de arquitetura aceita `x86_64`, inclusive AMD; não existe uma verificação da marca da CPU. |
-| Apple Silicon (`arm64`) | Não suportado: instalador e binários são `x86_64`. |
-| macOS diferente do 15 Sequoia | Não suportado por este pacote; a verificação do instalador restringe a versão e os kexts são configurados para o kernel 24.x. |
-| Clover, EFI OpenCore não identificável ou não gravável | O instalador interrompe sem instalar os componentes na EFI. |
-| Outro dongle ou outra revisão do chip | Não presumir compatibilidade: os IDs USB, a revisão do chip e os arquivos de firmware são conferidos pelo código. |
+| Mesmo Hackintosh Intel, macOS 15 Sequoia, OpenCore e AIC `a69c:8d81` | Validado |
+| Outro Hackintosh Intel `x86_64` com macOS 15 | Experimental, não validado |
+| Hackintosh AMD | Não validado |
+| Apple Silicon (`arm64`) | Não suportado |
+| macOS diferente do 15 / kernel diferente do 24.x | Não suportado |
+| Clover, outro dongle ou outra revisão do AIC | Não suportado |
 
-O carregador espera o dispositivo inicial `a69c:8d80`, sua transição após carregar o firmware para `a69c:8d81` e a revisão de chip verificada no código. **“É USB” não basta:** um produto de outra marca ou revisão pode usar protocolo e firmware diferentes.
+O carregador reconhece o dispositivo inicial `a69c:8d80`, carrega o firmware e
+espera a reenumeração como `a69c:8d81`. Um dongle visualmente parecido pode
+usar outro chip ou protocolo.
 
-### Sobre Hackintosh AMD
+## O que mudou
 
-Um AMD que **já inicializa o Sequoia pelo OpenCore** pode atender aos mesmos requisitos de arquitetura do pacote. O instalador preserva as entradas existentes de `Kernel/Patch`, mas altera `Kernel/Add` e NVRAM, e **substitui por versões incluídas no pacote** os kexts Lilu, BlueToolFixup, AIC88M80ModeSwitch e AICUSBTransportFixup. Por isso, uma EFI AMD já ajustada pode ter conflitos ou regressões. Os [patches de kernel para AMD](https://github.com/AMD-OSX/AMD_Vanilla) continuam sendo responsabilidade da configuração daquele Hackintosh; este pacote não os instala nem os valida.
+- O kext 0.0.18 corrige a causa identificada do kernel panic da versão 0.0.17
+  ao preparar e finalizar corretamente os descritores de memória do IOKit.
+- A associação em 5 GHz solicita explicitamente operação de 80 MHz.
+- O transporte mantém oito leituras USB simultâneas, fila de 2.048 registros e
+  processa até 256 registros por ciclo.
+- Até 16 frames Ethernet são entregues por chamada entre serviço e kext.
+- A cópia de payload usa `memmove` e submissão direta de lotes validados.
+- Contadores de largura de canal, registros malformados, ocupação e descarte de
+  fila permitem validar a carga sem adivinhação.
+- As otimizações de velocidade não alteram o kext já estabilizado.
 
-Não publique uma conclusão de “suporte AMD” com base apenas na instalação do `.pkg`: é preciso confirmar boot, enumeração USB, Wi-Fi, Bluetooth, reconexão e novo boot na máquina AMD. Para o primeiro teste, mantenha um pendrive de boot funcional e um backup externo da EFI.
+## Instalador completo
 
-## O que está incluído
+O arquivo `AIC-8800D80-Native-1.3.4.pkg` contém:
 
-- Carregador de firmware que inicializa o AIC pelo USB e aguarda a reenumeração do dispositivo.
-- Serviço Wi-Fi iniciado pelo `launchd` e app **AIC Wi-Fi** na barra de menus.
-- Busca de redes ao abrir o menu, seleção de rede com indicador de conexão, armazenamento da credencial derivada no Chaves do Sistema e tentativa de reconexão automática.
-- Componentes OpenCore para o dongle e integração Bluetooth: Lilu, BlueToolFixup e dois kexts específicos do AIC.
-- Backup automático de `EFI/OC` antes de alterar o OpenCore. **Isso não substitui um backup próprio da EFI inteira.**
+- driver nativo AICNativeProbe 0.0.18;
+- firmware e carregador USB;
+- serviço Wi‑Fi, biblioteca de transporte e integração CoreWLAN;
+- instalador/atualizador transacional da EFI com validação por hashes;
+- cópia de recuperação do driver anterior;
+- aplicativo legado e `Voltar ao AIC.command` para reversão.
 
-O serviço pode iniciar com o macOS sem que o menu esteja aberto; o menu é carregado na sessão do usuário. A primeira associação ainda exige escolher uma rede WPA2 e informar a senha uma vez.
+Instalações nativas 0.0.15, 0.0.16 e 0.0.17 podem ser atualizadas. Se o driver
+0.0.18 já estiver instalado, o pacote verifica sua integridade e atualiza os
+componentes em espaço de usuário sem trocar o kext estável.
 
-## Requisitos antes de instalar
+## Instalação
 
-1. Hackintosh `x86_64` com **macOS 15 Sequoia** já funcional e iniciado por uma EFI OpenCore identificável.
-2. Dongle **AIC 8800D80** correspondente aos IDs e à revisão acima.
-3. Partição EFI de boot acessível e gravável, autorização de administrador e espaço para o backup do OpenCore.
-4. `/usr/bin/python3` funcional com os módulos padrão exigidos pelo pré-instalador. Em algumas instalações do macOS isso requer as ferramentas de desenvolvimento da Apple.
-5. Uma rede **WPA2-Personal/PSK com CCMP**. Redes abertas, WPA3-only e outros métodos de autenticação não são suportados nesta versão.
+1. Confirme que o Hackintosh inicia pelo OpenCore e que o pendrive de
+   recuperação validado está conectado.
+2. Baixe `AIC-8800D80-Native-1.3.4.pkg` na página da release e confira o
+   SHA‑256 publicado junto ao arquivo.
+3. Abra o pacote, leia o aviso e autorize como administrador.
+4. Reinicie quando solicitado.
+5. Conecte pelo menu Wi‑Fi nativo do macOS a uma rede WPA2 de 5 GHz.
 
-## Instalação e primeiro uso
+Não instale a versão 1.3.3/driver 0.0.17, associada ao panic corrigido nesta
+versão.
 
-1. Faça um backup da EFI inteira e confirme que consegue iniciar o computador por um pendrive ou outra EFI, caso precise reverter.
-2. Baixe o `.pkg` na [Release v1.1.2](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.1.2). Confira o SHA-256 antes de executar:
+## Recuperação e diagnóstico
 
-   ```text
-   0c5a630029555cb22a9979a7bd6e21b072ddf1cf7e75779a39b39a5814059a20  AIC-8800D80-Complete-1.1.2.pkg
-   ```
+- Logs: `/Library/Logs/AIC88M80WiFi.log` e
+  `/Library/Logs/AIC88M80Installer.log`.
+- Estado do serviço:
+  `sudo launchctl print system/local.victor.AIC88M80WiFi`.
+- O comando `/Applications/Voltar ao AIC.command` restaura o caminho anterior
+  somente depois de conferir os hashes registrados.
+- Se o macOS não iniciar, use o pendrive e restaure o backup completo da EFI.
 
-   No macOS, use `shasum -a 256 AIC-8800D80-Complete-1.1.2.pkg` para calcular o hash do arquivo baixado.
-3. Abra o instalador, conceda as permissões solicitadas e leia os avisos. Ele instala o app em `/Applications/AIC Wi-Fi.app`, prepara os serviços e atualiza a EFI OpenCore de boot. O app tenta abrir na sessão atual.
-4. **Reinicie** quando solicitado para ativar as alterações da EFI. Conecte o dongle, caso ainda não esteja conectado.
-5. Abra o ícone AIC Wi-Fi na barra de menus. A busca começa automaticamente; escolha uma rede WPA2 e informe a senha. Aguarde a indicação de conexão sem fechar o menu.
-6. Confirme acesso à rede e faça outro teste após reiniciar. O serviço tenta conectar automaticamente à rede escolhida quando o dongle e a credencial estão disponíveis.
-
-O primeiro boot pode demorar mais por causa da inicialização USB e do carregamento de firmware. Tempo de busca, conexão e velocidade dependem do dongle, porta USB, sinal, banda e roteador; **90 Mb/s não é uma velocidade garantida**. Durante uma conexão ativa, uma busca completa pode ser adiada para não interromper o enlace USB.
-
-## O que o instalador altera
-
-- Copia o app para `/Applications` e os arquivos de suporte para `/Library/Application Support/AIC88M80Driver`.
-- Instala serviços em `/Library/LaunchDaemons` e o menu em `/Library/LaunchAgents`.
-- Identifica a partição EFI usada no boot, monta-a e copia `EFI/OC` para `/Library/Application Support/AIC88M80Driver/Backups/EFI-*/OC`.
-- Copia/substitui quatro kexts em `EFI/OC/Kexts` e habilita suas entradas em `Kernel/Add` do `config.plist`.
-- Adiciona `-btlfxboardid` e `-aicusbfix` aos `boot-args` e metadados Bluetooth em NVRAM no `config.plist`.
-
-O instalador não altera intencionalmente `Kernel/Patch`, mas não analisa se todos os outros kexts, patches e opções de uma EFI específica são compatíveis com as versões incluídas. Se a etapa de atualização da EFI falhar, o código tenta restaurar as alterações dessa etapa; ainda assim, mantenha o seu próprio backup.
+Os logs podem conter SSID e informações do computador. Remova dados pessoais
+antes de publicá-los.
 
 ## Limitações conhecidas
 
-- Apenas a combinação de hardware e macOS descrita acima recebeu teste prático. AMD ainda precisa de validação real.
-- Apenas WPA2-PSK/CCMP nesta versão; não há suporte confirmado para rede aberta, WPA3-only ou autenticação corporativa.
-- O projeto implementa um serviço de rede próprio; recursos do ecossistema Apple como AirDrop, Handoff e Continuity **não foram validados** por este projeto.
-- **Wi‑Fi nativo ainda não funciona:** a v1.1.2 conecta pelo serviço AIC e uma interface UTUN, não por uma `IO80211Interface` do macOS. A branch de pesquisa contém um controlador IO80211 experimental que compila, mas não está instalado nem registra a interface. O foco inicial agora é fazer busca, associação e dados funcionarem nessa interface nativa; AirDrop fica para uma etapa posterior.
-- A branch de pesquisa compila consultas nativas de canal, modo estação, RSSI e MAC e uma variante separada que tenta registrar uma interface BSD/Skywalk. Essa variante **não é empacotada nem carregada**: seu ciclo de vida só foi verificado pelo compilador, e ainda faltam busca, associação e tráfego nativos utilizáveis.
-- O contrato experimental de busca entre kernel e serviço já tem pedidos, resultados, conclusão, cancelamento e timeout com sequência e limites. Há uma sessão de serviço de pesquisa que transforma esses pedidos em varreduras AIC e filtra os beacons recebidos. Ela **não é iniciada pelo serviço instalado**, e a variante nativa do kernel não foi carregada: a busca nativa continua indisponível no Mac.
-- O pedido privado de conexão do macOS 15 tem um decodificador testado offline para WPA2-PSK/CCMP com PMK. Um eventual resultado de busca ainda terá de validar a segurança antes de usar essa credencial.
-- Na variante de compilação nativa, o controlador oferece a PMK uma única vez ao cliente autorizado do serviço, com sequência, expiração e limpeza da cópia no kernel. O serviço de pesquisa agora tem o fluxo de associação WPA2, troca de quadros Ethernet e sinalização de link para o macOS, cobertos apenas por testes simulados. **Ele não é iniciado na instalação atual; nenhuma conexão nativa, DHCP ou carregamento desse kext foi validado no Mac.**
-- Desconexão e liga/desliga nativos agora têm um caminho de comando no protótipo: o serviço encerra a sessão, o controlador derruba o link se o cliente privilegiado fecha, e pedidos recebidos com o rádio desligado são recusados antes do USB. Esses caminhos também só passaram por testes offline.
-- O diagnóstico `kmutil` do pacote temporário parou na exigência de propriedade `root:wheel` (o arquivo de teste pertence ao usuário); isso **não valida** o carregamento do kext. Nenhum pacote experimental foi instalado.
-- Um protótipo nativo anterior provocou kernel panic na inicialização do controlador por usar uma fila de trabalho incompatível com a do provedor. A pesquisa atual rejeita essa topologia antes da chamada ao controlador-base, mas essa proteção só passou por checagem offline: **não autoriza instalar ou carregar o novo kext**.
-- A pesquisa para usar AirDrop **somente com o AIC** está em [`docs/airdrop-aic-research.md`](docs/airdrop-aic-research.md); a versão 1.1.2 ainda não oferece essa função.
-- Uma busca completa é adiada quando já existe uma conexão ativa para evitar timeout do controle USB observado no dongle.
-- O pacote publicado não tem assinatura Developer ID nem notarização Apple.
-- O código deste repositório é um **snapshot**, não um processo de build reproduzível do `.pkg`: firmware, kexts de terceiros e binários gerados não estão versionados aqui.
+- Somente WPA2‑PSK/CCMP foi validado; WPA3‑only e redes corporativas não são
+  suportadas nesta release.
+- AirDrop, Handoff e Continuity não foram validados.
+- O pacote é específico deste Hackintosh e exige o pendrive de recuperação
+  cadastrado pelo instalador.
+- O repositório não inclui redistribuição reproduzível de todos os firmwares e
+  kexts de terceiros usados como base do pacote completo.
 
-## Diagnóstico e recuperação
-
-Se não aparecer rede ou a conexão não voltar após o boot:
-
-1. Confirme que o dongle USB correto está conectado e aparece no Relatório do Sistema → USB. Teste outra porta USB se ele não enumerar.
-2. Confira se os serviços iniciaram: `sudo launchctl print system/local.victor.AIC88M80Firmware` e `sudo launchctl print system/local.victor.AIC88M80WiFi`.
-3. Veja os logs locais em `/Library/Logs/AIC88M80Driver.log`, `/Library/Logs/AIC88M80WiFi.log` e `/Library/Logs/AIC88M80Installer.log`. Eles podem conter nome de rede e dados do computador; **remova informações pessoais antes de compartilhar**.
-4. Confira a versão instalada com `pkgutil --pkg-info local.victor.AIC8800D80`.
-
-Se o macOS deixar de iniciar após a instalação, use o meio alternativo de boot e **restaure seu backup da EFI**. O backup automático de `EFI/OC` fica no caminho acima, mas não é um backup completo da partição. Não substitua às cegas a EFI de outra máquina: preserve os patches AMD e demais ajustes próprios do seu hardware.
-
-## Código-fonte
-
-| Pasta | Conteúdo |
-| --- | --- |
-| [`wifi/`](wifi/) | Serviço, transporte USB, busca, autenticação WPA2, rede e relatórios. |
-| [`menu/`](menu/) | App Swift da barra de menus. |
-| [`firmware-loader/`](firmware-loader/) | Inicialização do firmware e comunicação USB. |
-| [`installer/`](installer/) | Scripts, configuração do pacote, integração OpenCore e serviços `launchd`. |
-| [`kexts/`](kexts/) | Fontes dos dois kexts específicos do AIC. |
-| [`tests/`](tests/) | Testes automatizados de lógica sem dongle. |
-
-Para executar os testes de lógica em um ambiente com Python 3:
+## Desenvolvimento e testes
 
 ```sh
 PYTHONPATH=wifi python3 -m unittest discover -s tests
 ```
 
-Não adicione ao GitHub perfis de rede, senhas, chaves, logs de uso, backups da EFI ou dumps de firmware. Para relatar um problema, inclua versão do macOS, CPU, OpenCore, IDs USB do dongle, comportamento observado e logs **revisados para remover dados pessoais**.
+A release passou por 164 testes Python, testes C++ dos contratos kernel/serviço,
+inspeção do payload do `.pkg`, reinicialização real e teste de velocidade.
+
+Não envie ao repositório senhas, perfis de rede, Chaves, logs sem revisão,
+backups da EFI ou dumps privados de firmware.
 
 ---
 
 <a id="english"></a>
 
-# AIC 8800D80 Wi-Fi and Bluetooth for macOS
+# AIC 8800D80 native Wi‑Fi for macOS
 
-An experimental project for using the **AIC 8800D80** USB dongle on a Hackintosh running macOS 15 Sequoia with OpenCore. The current installer version is **1.1.2**.
+Experimental driver and installer that exposes the USB **AIC 8800D80** as a
+native Wi‑Fi interface on an Intel Hackintosh running macOS 15 Sequoia and
+OpenCore. The current stable release is **v1.3.4**, with native driver
+**0.0.18**.
 
-**[Download the complete v1.1.2 installer](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.1.2)**
+**[Download the complete v1.3.4 installer](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.3.4)**
 
-> **Warning:** the installer modifies the EFI/OpenCore configuration used to boot your computer. Make your own backup of the **entire EFI partition** and keep an alternative boot method available before installing. The package is not signed with an Apple Developer ID. This project has been tested on one machine; it is not guaranteed to work on every Hackintosh.
+> **Warning:** the installer modifies the boot EFI/OpenCore configuration.
+> Keep a complete EFI backup and a working recovery USB drive. The package was
+> validated on one machine, is not signed or notarized by Apple, and is not a
+> universal Hackintosh driver.
+
+## Validated v1.3.4 state
+
+- Native `en2` interface recognized by the macOS Wi‑Fi menu and CoreWLAN.
+- Native-only operation during normal use; the previous app/UTUN path remains
+  installed for recovery only.
+- WPA2‑PSK/CCMP association on 5 GHz.
+- Wi‑Fi 6 (HE SU) reception on an 80 MHz channel.
+- Reconnection and post-reboot operation validated.
+- Peak measured on the target Hackintosh: **190.24 Mbps download** and
+  **29.35 Mbps upload** with Ookla Speedtest.
+- Zero malformed USB records and zero RX queue drops during the test.
+
+Performance is not guaranteed and depends on signal, interference, channel,
+router, USB port, and the selected test server.
 
 ## Compatibility
 
-The dongle uses USB, so the radio does not depend on a particular motherboard model. That **does not** mean the package works on every computer, macOS version, or USB adapter.
-
-| Environment | Status in v1.1.2 |
+| Environment | Status |
 | --- | --- |
-| Intel `x86_64` Hackintosh, macOS 15 Sequoia, OpenCore, same AIC 8800D80 | Tested on **one** machine; other configurations have not been validated. |
-| AMD `x86_64` Hackintosh, macOS 15 Sequoia, OpenCore, same AIC 8800D80 | **Potentially compatible, untested.** The architecture check accepts `x86_64`, including AMD; it does not check the CPU brand. |
-| Apple Silicon (`arm64`) | Unsupported: the installer and binaries are `x86_64`. |
-| macOS other than 15 Sequoia | Unsupported by this package; the installer checks the OS version and configures its kexts for kernel 24.x. |
-| Clover, or an OpenCore EFI that cannot be identified or written | The installer stops without installing the EFI components. |
-| A different dongle or chip revision | Do not assume compatibility: the code checks USB IDs, chip revision, and firmware files. |
+| Target Intel Hackintosh, macOS 15 Sequoia, OpenCore, AIC `a69c:8d81` | Validated |
+| Another Intel `x86_64` Hackintosh on macOS 15 | Experimental, untested |
+| AMD Hackintosh | Untested |
+| Apple Silicon (`arm64`) | Unsupported |
+| macOS other than 15 / kernel other than 24.x | Unsupported |
+| Clover, another dongle, or another AIC revision | Unsupported |
 
-The firmware loader expects the initial `a69c:8d80` USB device, its transition to `a69c:8d81` after firmware loading, and the chip revision checked in the code. **USB alone is not enough:** another product or revision may use a different protocol and firmware.
+The loader recognizes the initial `a69c:8d80` device, loads its firmware, and
+waits for it to re-enumerate as `a69c:8d81`.
 
-### AMD Hackintosh notes
+## Key changes
 
-An AMD machine that **already boots Sequoia through OpenCore** may meet the package's architecture requirements. The installer keeps existing `Kernel/Patch` entries, but changes `Kernel/Add` and NVRAM and **replaces the installed copies** of Lilu, BlueToolFixup, AIC88M80ModeSwitch, and AICUSBTransportFixup with the bundled versions. An AMD EFI that has already been tuned for its hardware may therefore encounter conflicts or regressions. That machine's [AMD kernel patches](https://github.com/AMD-OSX/AMD_Vanilla) remain its own responsibility; this package neither installs nor validates them.
+- Native kext 0.0.18 fixes the identified 0.0.17 kernel panic cause by correctly
+  preparing and completing IOKit memory descriptors.
+- 5 GHz association explicitly requests 80 MHz operation.
+- Eight concurrent USB reads, a 2,048-record queue, and up to 256 records
+  processed per cycle keep the data endpoint supplied.
+- Up to 16 Ethernet frames cross the service/kext boundary per call.
+- Payload copies use `memmove` and direct submission of validated batches.
+- Runtime counters expose channel width, malformed records, queue occupancy,
+  and drops.
+- Throughput work does not replace the stabilized kext.
 
-Do not claim “AMD support” just because the `.pkg` installs. Boot, USB enumeration, Wi-Fi, Bluetooth, reconnection, and another reboot must all be checked on an AMD machine. Keep a working boot USB drive and an external EFI backup for the first test.
+## Complete installer
 
-## What is included
+`AIC-8800D80-Native-1.3.4.pkg` includes the native 0.0.18 driver, AIC firmware
+and USB loader, Wi‑Fi service and transport library, CoreWLAN integration,
+transactional EFI upgrade scripts, recovery copy, and the legacy rollback path.
 
-- A firmware loader that initializes the AIC device over USB and waits for it to re-enumerate.
-- A `launchd` Wi-Fi service and the **AIC Wi-Fi** menu bar app.
-- Network scanning when the menu opens, network selection with a connection indicator, derived credential storage in the System Keychain, and automatic reconnection attempts.
-- OpenCore components for the dongle and Bluetooth integration: Lilu, BlueToolFixup, and two AIC-specific kexts.
-- An automatic backup of `EFI/OC` before OpenCore is changed. **This does not replace your own backup of the entire EFI partition.**
+Native 0.0.15, 0.0.16, and 0.0.17 installations can be upgraded. An existing
+0.0.18 installation is integrity-checked and receives only user-space updates,
+keeping the stable kext unchanged.
 
-The service can start with macOS even when the menu app is not open; the menu app starts in the user's session. The first connection still requires selecting a WPA2 network and entering its password once.
+## Installation
 
-## Requirements before installation
+1. Confirm that the Hackintosh boots through OpenCore and connect its validated
+   recovery USB drive.
+2. Download `AIC-8800D80-Native-1.3.4.pkg` from the release and verify the
+   published SHA‑256 digest.
+3. Open the package and authorize installation as an administrator.
+4. Restart when requested.
+5. Connect to a 5 GHz WPA2 network using the native macOS Wi‑Fi menu.
 
-1. A working `x86_64` Hackintosh running **macOS 15 Sequoia**, booted through an identifiable OpenCore EFI.
-2. An **AIC 8800D80** dongle matching the USB IDs and chip revision above.
-3. Access to a writable boot EFI partition, administrator authorization, and enough space for the OpenCore backup.
-4. A working `/usr/bin/python3` with the standard modules required by the pre-install script. On some macOS installations, this requires Apple's developer tools.
-5. A **WPA2-Personal/PSK network using CCMP**. Open networks, WPA3-only networks, and other authentication methods are unsupported in this version.
+Do not install version 1.3.3/native driver 0.0.17, which contained the panic
+fixed in this release.
 
-## Installation and first use
+## Recovery, limitations, and tests
 
-1. Back up the entire EFI partition and confirm that you can boot using a USB drive or another EFI if you need to roll back.
-2. Download the `.pkg` from the [v1.1.2 Release](https://github.com/ofonsecavictor/aic-8800d80-macos/releases/tag/v1.1.2). Verify its SHA-256 before running it:
+- Logs: `/Library/Logs/AIC88M80WiFi.log` and
+  `/Library/Logs/AIC88M80Installer.log`.
+- `/Applications/Voltar ao AIC.command` provides a hash-checked rollback path.
+- WPA2‑PSK/CCMP is the validated security mode. WPA3-only and enterprise
+  networks are unsupported in this release.
+- AirDrop, Handoff, and Continuity have not been validated.
+- This package is specific to the target Hackintosh and its registered recovery
+  drive.
+- Validation covered 164 Python tests, C++ kernel/service contract tests,
+  package payload inspection, a real reboot, and a live speed test.
 
-   ```text
-   0c5a630029555cb22a9979a7bd6e21b072ddf1cf7e75779a39b39a5814059a20  AIC-8800D80-Complete-1.1.2.pkg
-   ```
-
-   On macOS, run `shasum -a 256 AIC-8800D80-Complete-1.1.2.pkg` to calculate the downloaded file's hash.
-3. Open the installer, grant the requested permissions, and read its warnings. It installs the app at `/Applications/AIC Wi-Fi.app`, prepares the services, and updates the boot OpenCore EFI. It attempts to open the app in the current session.
-4. **Restart** when prompted so the EFI changes take effect. Connect the dongle if it is not already connected.
-5. Open the AIC Wi-Fi menu bar icon. Scanning starts automatically; select a WPA2 network and enter its password. Wait for the connection indicator without closing the menu.
-6. Verify network access and test again after another reboot. The service attempts to reconnect to the selected network when the dongle and saved credential are available.
-
-The first boot may take longer because of USB initialization and firmware loading. Scan time, connection time, and throughput depend on the dongle, USB port, signal, band, and router; **90 Mb/s is not guaranteed**. A full scan may be deferred while connected to avoid interrupting the USB link.
-
-## What the installer changes
-
-- Copies the app to `/Applications` and support files to `/Library/Application Support/AIC88M80Driver`.
-- Installs services in `/Library/LaunchDaemons` and the menu app in `/Library/LaunchAgents`.
-- Finds and mounts the EFI partition used for boot, then copies `EFI/OC` to `/Library/Application Support/AIC88M80Driver/Backups/EFI-*/OC`.
-- Copies/replaces four kexts in `EFI/OC/Kexts` and enables their entries in `Kernel/Add` in `config.plist`.
-- Adds `-btlfxboardid` and `-aicusbfix` to `boot-args` and Bluetooth metadata under NVRAM in `config.plist`.
-
-The installer does not intentionally modify `Kernel/Patch`, but it does not check whether all other kexts, patches, and settings in a particular EFI work with the bundled versions. If the EFI update step fails, the code attempts to roll back that step; you should still keep your own backup.
-
-## Known limitations
-
-- Practical testing covers only the hardware and macOS combination described above. AMD still needs real-world validation.
-- WPA2-PSK/CCMP only in this version; open networks, WPA3-only networks, and enterprise authentication are not supported.
-- The project uses its own networking service; Apple ecosystem features such as AirDrop, Handoff, and Continuity **have not been validated** by this project.
-- **Native Wi‑Fi does not work yet:** v1.1.2 connects through the AIC service and a UTUN interface, not a macOS `IO80211Interface`. The research branch contains an experimental IO80211 controller that compiles but is neither installed nor registering an interface. The initial focus is native scanning, association, and data; AirDrop is deferred to a later stage.
-- The research branch compiles native channel, station-mode, RSSI, and MAC queries plus a separate variant that attempts BSD/Skywalk interface registration. That variant is **neither packaged nor loaded**: its lifecycle has only been compiler-checked, and native scanning, association, and packet I/O are not usable yet.
-- The experimental kernel/service scan contract now has bounded, sequenced requests, results, completion, cancellation, and timeout. A research service session can turn those requests into AIC scans and filter received beacons. It is **not started by the installed service**, and the native kernel variant has not been loaded, so native scanning remains unavailable on this Mac.
-- The macOS 15 private join request has an offline-tested decoder for WPA2-PSK/CCMP with a PMK. A future scan result must still have its security checked before using that credential.
-- In the compile-only native variant, the controller offers the PMK once to the service's authorized client, with a sequence, expiry, and erasure of the kernel copy. Research service code now has a WPA2 association flow, Ethernet-frame exchange, and macOS link-state signaling, covered only by simulated tests. **It is not started by the current installation; no native connection, DHCP, or kext load has been validated on this Mac.**
-- Native disconnect and power on/off now have a command path in the prototype: the service ends its session, the controller drops the link if its privileged client closes, and requests received while powered off are rejected before USB access. These paths have also passed offline tests only.
-- `kmutil` diagnostics stopped at the temporary bundle's `root:wheel` ownership requirement (the test files are user-owned); this **does not validate** kext loading. No experimental bundle was installed.
-- An earlier native prototype caused kernel panics when controller startup used a work queue incompatible with its provider. The current research code rejects that topology before calling the base controller, but this protection has only been checked offline: **it is not authorization to install or load the new kext**.
-- Research toward AirDrop **using only the AIC** is tracked in [`docs/airdrop-aic-research.md`](docs/airdrop-aic-research.md); version 1.1.2 does not provide this feature yet.
-- A full scan is deferred while connected to avoid the USB control timeout observed with this dongle.
-- The published package has no Apple Developer ID signature or Apple notarization.
-- This repository is a source **snapshot**, not a reproducible `.pkg` build: firmware, third-party kexts, and generated binaries are not tracked here.
-
-## Troubleshooting and recovery
-
-If networks do not appear or the connection does not return after boot:
-
-1. Confirm that the correct USB dongle is connected and appears in System Information → USB. Try another USB port if it does not enumerate.
-2. Check that the services started: `sudo launchctl print system/local.victor.AIC88M80Firmware` and `sudo launchctl print system/local.victor.AIC88M80WiFi`.
-3. Review the local logs at `/Library/Logs/AIC88M80Driver.log`, `/Library/Logs/AIC88M80WiFi.log`, and `/Library/Logs/AIC88M80Installer.log`. They may contain the network name and computer details; **remove personal information before sharing them**.
-4. Check the installed version with `pkgutil --pkg-info local.victor.AIC8800D80`.
-
-If macOS stops booting after installation, boot through your alternative method and **restore your EFI backup**. The automatic `EFI/OC` backup is stored at the path above, but it is not a backup of the whole partition. Do not blindly copy another machine's EFI: preserve AMD patches and other hardware-specific settings.
-
-## Source code
-
-| Directory | Contents |
-| --- | --- |
-| [`wifi/`](wifi/) | Service, USB transport, scanning, WPA2 authentication, networking, and reports. |
-| [`menu/`](menu/) | Swift menu bar app. |
-| [`firmware-loader/`](firmware-loader/) | Firmware initialization and USB communication. |
-| [`installer/`](installer/) | Scripts, package settings, OpenCore integration, and `launchd` services. |
-| [`kexts/`](kexts/) | Sources for the two AIC-specific kexts. |
-| [`tests/`](tests/) | Automated logic tests that do not require a dongle. |
-
-To run the logic tests in an environment with Python 3:
+Run the logic suite with:
 
 ```sh
 PYTHONPATH=wifi python3 -m unittest discover -s tests
 ```
 
-Do not commit network profiles, passwords, keys, usage logs, EFI backups, or firmware dumps to GitHub. When reporting an issue, include the macOS version, CPU, OpenCore version, dongle USB IDs, observed behavior, and logs **reviewed to remove personal information**.
+Never commit network passwords, profiles, Keychain contents, unredacted logs,
+EFI backups, or private firmware dumps.
