@@ -23,7 +23,7 @@ A versão estável atual é a **v1.3.4**, com driver nativo **0.0.18**.
 - Associação WPA2‑PSK/CCMP em 5 GHz.
 - Recepção Wi‑Fi 6 (HE SU) em canal de 80 MHz.
 - Reconexão e funcionamento após reinicialização validados.
-- Máxima medida neste Hackintosh: **190,24 Mbps de download** e
+- Máxima medida neste Hackintosh: **220.41 Mbps de download** e
   **29,35 Mbps de upload** no Ookla Speedtest.
 - Durante o teste: zero registros USB malformados e zero descarte da fila RX.
 
