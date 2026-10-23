@@ -63,3 +63,15 @@ class NativeUpgradeTests(unittest.TestCase):
 
     def test_upgrade_from_stable_0018(self):
         self.exercise(previous_version='0.0.18')
+
+    def test_upgrade_from_airdrop_preview_0019(self):
+        self.exercise(previous_version='0.0.19')
+
+    def test_upgrade_from_airdrop_preview_0020(self):
+        self.exercise(previous_version='0.0.20')
+
+    def test_upgrade_from_airdrop_preview_0021(self):
+        self.exercise(previous_version='0.0.21')
+
+    def test_upgrade_from_panicking_airdrop_preview_0022(self):
+        self.exercise(previous_version='0.0.22')

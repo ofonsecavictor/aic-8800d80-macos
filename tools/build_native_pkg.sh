@@ -23,7 +23,7 @@ esac
 [ -f "$bundle/Contents/MacOS/AICNativeProbe" ] || exit 1
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$bundle/Contents/Info.plist")
 identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist")
-[ "$version" = 0.0.19 ] && [ "$identifier" = local.victor.AICNativeProbe ] || exit 1
+[ "$version" = 0.0.23 ] && [ "$identifier" = local.victor.AICNativeProbe ] || exit 1
 stage=$(/usr/bin/mktemp -d /private/tmp/aic-native-package.XXXXXXXX)
 echo "Build staging: $stage"
 /bin/mkdir "$stage/payload" "$stage/scripts" "$stage/resources" "$stage/module-cache"
@@ -58,7 +58,7 @@ native="$stage/payload/Library/Application Support/AIC88M80Driver/NativeMode"
 /bin/chmod 755 "$stage/payload/Applications/Voltar ao AIC.command"
 /bin/cp "$repo_dir/installer/LEIA-ME-AIRDROP.txt" "$stage/resources/LEIA-ME-AIRDROP.txt"
 /usr/bin/pkgbuild --root "$stage/payload" --scripts "$stage/scripts" \
-    --identifier local.victor.AIC8800D80.Native --version 1.4.0-airdrop.2 \
+    --identifier local.victor.AIC8800D80.Native --version 1.4.0 \
     --install-location / "$stage/AIC8800D80-native-airdrop-component.pkg"
 /usr/bin/productbuild --distribution "$repo_dir/installer/airdrop-Distribution.xml" \
     --resources "$stage/resources" --package-path "$stage" "$output"

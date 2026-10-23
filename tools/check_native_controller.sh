@@ -247,6 +247,8 @@ if [ -f "$boot_kc" ] && [ -f "$system_kc" ]; then
     fi
     count=$(/usr/bin/wc -l < "$stage/undefined.txt" | /usr/bin/tr -d ' ')
     echo "$count símbolos externos encontrados nas coleções locais."
+    /usr/bin/python3 "$repo_dir/tools/check_native_virtual_interface_abi.py" \
+        "$boot_kc" "$stage/AICNativeRegistrationProbe"
 fi
 
 bundle="$stage/AICNativeProbe.kext"

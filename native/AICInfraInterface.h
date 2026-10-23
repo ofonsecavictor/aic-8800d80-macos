@@ -36,6 +36,8 @@ public:
     IOReturn setWCL_LINK_STATE_UPDATE(
         apple80211_wcl_update_link_state *request) override;
     IOReturn setWCL_UPDATE_FAST_LANE(apple80211_fastlane *request) override;
+    IOReturn setVIRTUAL_IF_CREATE(
+        apple80211_virt_if_create_data *request) override;
 
 #include "AICInfraProtocolStubs.inc"
 

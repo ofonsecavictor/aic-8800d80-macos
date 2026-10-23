@@ -6,15 +6,7 @@
 // retains ownership of the dongle.
 
 #include <IO80211ControllerV2.h>
-// The pinned macOS 15 controller header already includes the Skywalk packet
-// types. The legacy include pulled by IO80211VirtualInterface.h redeclares
-// TxPacketRequest, so suppress only that redundant header while retaining the
-// full virtual-interface ABI declaration.
-struct apple80211_pmk_cache_data;
-struct packet_info_tx;
-#define _IO80211INTERFACE_H
-#include <IO80211VirtualInterface.h>
-#undef _IO80211INTERFACE_H
+#include "AICNativeVirtualInterfaceABI.h"
 #include <Airport/macOS15/FaultReporter.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOCommandGate.h>
@@ -114,6 +106,27 @@ extern "C" void AICVirtualInterfacePostMessage(
     IO80211VirtualInterface *, unsigned int, void *, unsigned long, bool)
     __asm__("__ZN23IO80211VirtualInterface11postMessageEjPvmb");
 
+// IO80211VirtualInterface is an abstract allocation root on macOS 15: its
+// MetaClass::alloc() intentionally returns nullptr.  Hardware drivers are
+// expected to allocate a concrete subclass and then use the common
+// IO80211VirtualInterface implementation for initialization and attachment.
+class AICNativeAWDLInterface final : public IO80211VirtualInterface {
+    OSDeclareDefaultStructors(AICNativeAWDLInterface)
+
+public:
+    IOReturn setMacAddress(ether_addr &) override;
+};
+
+OSDefineMetaClassAndStructors(AICNativeAWDLInterface,
+                              IO80211VirtualInterface)
+
+IOReturn AICNativeAWDLInterface::setMacAddress(ether_addr &) {
+    // The common virtual-interface initializer owns the interface address.
+    // The AIC firmware address is selected by the controller mailbox, so there
+    // is no second hardware register to program for the AWDL child.
+    return kIOReturnSuccess;
+}
+
 void AICNativeUSBProvider::free() {
     if (queue && AICDefaultWorkQueue() == queue)
         AICSetDefaultWorkQueue(nullptr);
@@ -195,11 +208,15 @@ public:
     IOReturn requestLeave();
     IOReturn nextLeaveCommand(IOUserClient *client, AICNativeCommand *command);
     IOReturn nextAWDLState(AICNativeAWDLState *state);
+    IOReturn createRequestedAWDLInterface(
+        const apple80211_virt_if_create_data &request);
     UInt32 outputPacket(mbuf_t packet, void *parameter) override;
 
 private:
     bool initCoreCapture();
     void releaseCoreCapture();
+    IOReturn createAWDLInterface(
+        const apple80211_virt_if_create_data &request, bool automatic);
 #if defined(AIC_NATIVE_INTERFACE_PROBE) && AIC_NATIVE_INTERFACE_PROBE
     bool attachNativeInterface();
     void detachNativeInterface();
@@ -213,6 +230,7 @@ private:
     static IOReturn joinGated(OSObject *owner, void *operation,
                              void *payload, void *client, void *);
     static void joinTimerFired(OSObject *owner, IOTimerEventSource *sender);
+    static void awdlTimerFired(OSObject *owner, IOTimerEventSource *sender);
 #endif
     IO80211WorkQueue *queue = nullptr;
     CCPipe *logPipe = nullptr;
@@ -228,6 +246,7 @@ private:
     IOCommandGate *commandGate = nullptr;
     IOTimerEventSource *scanTimer = nullptr;
     IOTimerEventSource *joinTimer = nullptr;
+    IOTimerEventSource *awdlTimer = nullptr;
     AICInfraInterface *nativeInterface = nullptr;
     AICNativeEthernetInterface *bsdInterface = nullptr;
     IOSkywalkPacketBufferPool *skywalkPool = nullptr;
@@ -252,6 +271,9 @@ private:
     uint8_t awdlMac[6] = {};
     uint32_t awdlChannel = 0;
     bool awdlEnabled = false;
+    bool awdlCreateInProgress = false;
+    uint32_t awdlCreateRequests = 0;
+    uint32_t awdlAutocreateAttempts = 0;
     bool scanBridgeEnabled = false;
     IOUserClient *scanOwner = nullptr; // Cleared by owner close or controller teardown.
     uint32_t transmitSequence = 0;
@@ -315,6 +337,12 @@ void AICAirPortController::free() {
             queue->removeEventSource(joinTimer);
         OSSafeReleaseNULL(joinTimer);
     }
+    if (awdlTimer) {
+        awdlTimer->cancelTimeout();
+        if (queue && awdlTimer->getWorkLoop())
+            queue->removeEventSource(awdlTimer);
+        OSSafeReleaseNULL(awdlTimer);
+    }
     if (stateLock) {
         IOLockLock(stateLock);
         receivedFrames.clear();
@@ -323,6 +351,7 @@ void AICAirPortController::free() {
         IO80211VirtualInterface *awdl = awdlInterface;
         awdlInterface = nullptr;
         awdlEnabled = false;
+        awdlCreateInProgress = false;
         awdlChannel = 0;
         bzero(awdlMac, sizeof(awdlMac));
         bzero(&radioState, sizeof(radioState));
@@ -367,6 +396,12 @@ bool AICAirPortController::start(IOService *provider) {
         kIOTimerEventSourceOptionsPriorityWorkLoop, this, joinTimerFired);
     if (!joinTimer || queue->addEventSource(joinTimer) != kIOReturnSuccess) {
         IOLog("AICNative: controller join timer failed\n");
+        return false;
+    }
+    awdlTimer = IOTimerEventSource::timerEventSource(
+        kIOTimerEventSourceOptionsPriorityWorkLoop, this, awdlTimerFired);
+    if (!awdlTimer || queue->addEventSource(awdlTimer) != kIOReturnSuccess) {
+        IOLog("AICNative: controller AWDL timer failed\n");
         return false;
     }
 #endif
@@ -496,13 +531,17 @@ IO80211VirtualInterface *AICAirPortController::createVirtualInterface(
         IOLog("AICNative: rejected virtual interface role=%u\n", role);
         return nullptr;
     }
-    auto *interface = OSTypeAlloc(IO80211VirtualInterface);
+    setProperty("AICNativeAWDLFactoryInvoked", kOSBooleanTrue);
+    setProperty("AICNativeAWDLCreateStage", 1, 32);
+    auto *interface = OSTypeAlloc(AICNativeAWDLInterface);
     if (!interface) return nullptr;
+    setProperty("AICNativeAWDLCreateStage", 2, 32);
     if (!AICVirtualInterfaceInit(interface, this, address, role,
                                  AICVirtualInterfacePrefix(role))) {
         interface->release();
         return nullptr;
     }
+    setProperty("AICNativeAWDLCreateStage", 3, 32);
     if (!interface->setProperty("AICNativeAWDL", kOSBooleanTrue)) {
         interface->release();
         return nullptr;
@@ -530,8 +569,99 @@ IO80211VirtualInterface *AICAirPortController::createVirtualInterface(
         interface->release(); // Allocation returned on failure.
         return nullptr;
     }
+    setProperty("AICNativeAWDLCreateStage", 4, 32);
     IOLog("AICNative: created AWDL virtual interface\n");
     return interface;
+}
+
+IOReturn AICAirPortController::createRequestedAWDLInterface(
+    const apple80211_virt_if_create_data &request) {
+    return createAWDLInterface(request, false);
+}
+
+IOReturn AICAirPortController::createAWDLInterface(
+    const apple80211_virt_if_create_data &request, bool automatic) {
+    uint32_t requestVersion = 0;
+    uint32_t role = 0;
+    uint8_t addressBytes[6] = {};
+    uint8_t requestedName[sizeof(request.bsd_name)] = {};
+    bcopy(&request.version, &requestVersion, sizeof(requestVersion));
+    bcopy(&request.role, &role, sizeof(role));
+    bcopy(request.mac, addressBytes, sizeof(addressBytes));
+    bcopy(request.bsd_name, requestedName, sizeof(requestedName));
+    if (!AICValidAWDLCreateRequest(
+            requestVersion, role, addressBytes, sizeof(addressBytes),
+            requestedName, sizeof(requestedName))) {
+        setProperty("AICNativeAWDLCreateStatus",
+                    static_cast<uint32_t>(kIOReturnBadArgument), 32);
+        IOLog("AICNative: rejected WCL AWDL create request role=%u\n", role);
+        return kIOReturnBadArgument;
+    }
+    if (!stateLock || !nativeStarted) return kIOReturnNotReady;
+
+    IOLockLock(stateLock);
+    if (!automatic) ++awdlCreateRequests;
+    const bool alreadyCreated = awdlInterface != nullptr;
+    const bool sameAddress = alreadyCreated &&
+        memcmp(awdlMac, addressBytes, sizeof(awdlMac)) == 0;
+    const bool busy = awdlCreateInProgress;
+    if (!alreadyCreated && !busy) awdlCreateInProgress = true;
+    const uint32_t requestCount = awdlCreateRequests;
+    IOLockUnlock(stateLock);
+    if (automatic) {
+        setProperty("AICNativeAWDLAutocreateAttempted", kOSBooleanTrue);
+    } else {
+        setProperty("AICNativeAWDLCreateRequests", requestCount, 32);
+        setProperty("AICNativeAWDLCreateRequestSeen", kOSBooleanTrue);
+    }
+    if (alreadyCreated) {
+        const IOReturn result = sameAddress ? kIOReturnSuccess
+                                            : kIOReturnExclusiveAccess;
+        setProperty("AICNativeAWDLCreateStatus",
+                    static_cast<uint32_t>(result), 32);
+        return result;
+    }
+    if (busy) {
+        setProperty("AICNativeAWDLCreateStatus",
+                    static_cast<uint32_t>(kIOReturnBusy), 32);
+        return kIOReturnBusy;
+    }
+
+    ether_addr address = {};
+    bcopy(addressBytes, &address, sizeof(address));
+    IO80211VirtualInterface *attached = nullptr;
+    const bool attachedSuccessfully = attachVirtualInterface(
+        &attached, &address, role, true);
+
+    IO80211VirtualInterface *orphan = nullptr;
+    IOLockLock(stateLock);
+    awdlCreateInProgress = false;
+    const bool owned = attachedSuccessfully && attached &&
+                       awdlInterface == attached;
+    if (!owned && awdlInterface) {
+        orphan = awdlInterface;
+        awdlInterface = nullptr;
+        awdlEnabled = false;
+        awdlChannel = 0;
+        bzero(awdlMac, sizeof(awdlMac));
+        awdlMailbox.clear();
+    }
+    IOLockUnlock(stateLock);
+    if (orphan) orphan->release();
+
+    const IOReturn result = owned ? kIOReturnSuccess : kIOReturnError;
+    setProperty("AICNativeAWDLCreateStatus",
+                static_cast<uint32_t>(result), 32);
+    if (automatic)
+        setProperty("AICNativeAWDLAutocreateStatus",
+                    static_cast<uint32_t>(result), 32);
+    if (owned) {
+        setProperty("AICNativeAWDLCreateStage", 5, 32);
+        IOLog("AICNative: attached WCL AWDL virtual interface\n");
+    } else {
+        IOLog("AICNative: failed to attach WCL AWDL virtual interface\n");
+    }
+    return result;
 }
 
 int AICAirPortController::bpfOutputPacket(OSObject *object,
@@ -743,12 +873,18 @@ bool AICAirPortController::attachNativeInterface() {
     }
     setLinkStatus(kIONetworkLinkValid);
     bsdInterface->registerService();
+    awdlAutocreateAttempts = 0;
+    setProperty("AICNativeAWDLAutocreateScheduled", kOSBooleanTrue);
+    if (!awdlTimer || awdlTimer->setTimeoutMS(2000) != kIOReturnSuccess)
+        setProperty("AICNativeAWDLAutocreateStatus",
+                    static_cast<uint32_t>(kIOReturnNotReady), 32);
     return true;
 }
 
 void AICAirPortController::detachNativeInterface() {
     if (scanTimer) scanTimer->cancelTimeout();
     if (joinTimer) joinTimer->cancelTimeout();
+    if (awdlTimer) awdlTimer->cancelTimeout();
     scanBridgeEnabled = false;
     scanOwner = nullptr;
     uint32_t aborted = 0;
@@ -823,6 +959,48 @@ void AICAirPortController::joinTimerFired(
         AICWCLConnectionEvent event = AICMakeWCLConnectionEvent(
             bssid, false, kIOReturnTimeout);
         self->postMessage(self->nativeInterface, 213, &event, sizeof(event), true);
+    }
+}
+
+void AICAirPortController::awdlTimerFired(
+    OSObject *owner, IOTimerEventSource *sender) {
+    auto *self = OSDynamicCast(AICAirPortController, owner);
+    if (!self || sender != self->awdlTimer || !self->nativeStarted ||
+        !self->bsdInterface || !self->bsdInterface->getIfnet()) return;
+    if (self->stateLock) {
+        IOLockLock(self->stateLock);
+        const bool alreadyCreated = self->awdlInterface != nullptr;
+        IOLockUnlock(self->stateLock);
+        if (alreadyCreated) return;
+    }
+    ++self->awdlAutocreateAttempts;
+    self->setProperty("AICNativeAWDLAutocreateAttempts",
+                      self->awdlAutocreateAttempts, 32);
+    IOEthernetAddress stationAddress = {};
+    uint8_t awdlAddress[6] = {};
+    IOReturn result = kIOReturnBadArgument;
+    if (self->getHardwareAddress(&stationAddress) == kIOReturnSuccess &&
+        AICDeriveAWDLAddress(
+            reinterpret_cast<const uint8_t *>(&stationAddress),
+            sizeof(stationAddress), awdlAddress, sizeof(awdlAddress))) {
+        apple80211_virt_if_create_data request = {};
+        request.version = 1;
+        request.role = kAICVirtualInterfaceRoleAWDL;
+        bcopy(awdlAddress, request.mac, sizeof(awdlAddress));
+        result = self->createAWDLInterface(request, true);
+    } else {
+        self->setProperty("AICNativeAWDLAutocreateAttempted", kOSBooleanTrue);
+        self->setProperty("AICNativeAWDLAutocreateStatus",
+                          static_cast<uint32_t>(result), 32);
+    }
+    if (result == kIOReturnSuccess) {
+        self->setProperty("AICNativeAWDLAutocreateComplete", kOSBooleanTrue);
+        return;
+    }
+    if (self->awdlAutocreateAttempts < 5) {
+        sender->setTimeoutMS(1000);
+    } else {
+        IOLog("AICNative: delayed AWDL autocreate exhausted; primary Wi-Fi remains available\n");
     }
 }
 
@@ -1301,7 +1479,7 @@ SInt32 AICAirPortController::handleCardSpecific(
 IOReturn AICAirPortController::getDRIVER_VERSION(
     IO80211SkywalkInterface *, apple80211_version_data *data) {
     if (!data) return kIOReturnBadArgument;
-    static const char driverVersion[] = "AIC 8800D80 native 0.0.19-airdrop.2";
+    static const char driverVersion[] = "AIC 8800D80 native 0.0.23-airdrop.6";
     static_assert(sizeof(driverVersion) <= sizeof(data->string), "driver version too long");
     bzero(data, sizeof(*data));
     data->version = APPLE80211_VERSION;
@@ -1686,6 +1864,14 @@ extern "C" IOReturn AICNativeNextAWDLState(
                       : kIOReturnBadArgument;
 }
 
+extern "C" IOReturn AICNativeCreateAWDLInterface(
+    IOService *service, const apple80211_virt_if_create_data *request) {
+    if (!service || !request) return kIOReturnBadArgument;
+    auto *controller = OSDynamicCast(AICAirPortController, service);
+    return controller ? controller->createRequestedAWDLInterface(*request)
+                      : kIOReturnBadArgument;
+}
+
 extern "C" IOReturn AICNativeBeginScan(
     IOService *service, const AICWCLScanRequest *request) {
     if (!service || !request) return kIOReturnBadArgument;
@@ -1991,4 +2177,4 @@ extern "C" {
 kmod_start_func_t *_realmain = nullptr;
 kmod_stop_func_t *_antimain = nullptr;
 }
-KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.19", _start, _stop)
+KMOD_EXPLICIT_DECL(local.victor.AICNativeProbe, "0.0.23", _start, _stop)

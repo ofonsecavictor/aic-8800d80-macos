@@ -26,6 +26,48 @@ inline bool AICSupportsVirtualInterface(uint32_t role,
            AICValidVirtualInterfaceAddress(address, length);
 }
 
+inline bool AICDeriveAWDLAddress(const uint8_t *station, size_t stationLength,
+                                 uint8_t *awdl, size_t awdlLength) {
+    if (!awdl || awdlLength != 6 ||
+        !AICValidVirtualInterfaceAddress(station, stationLength)) return false;
+    for (size_t index = 0; index < awdlLength; ++index) awdl[index] = station[index];
+    awdl[0] = static_cast<uint8_t>((awdl[0] | 0x02) & 0xfe);
+    awdl[5] ^= 0x80;
+    return AICValidVirtualInterfaceAddress(awdl, awdlLength);
+}
+
 inline const char *AICVirtualInterfacePrefix(uint32_t role) {
     return role == kAICVirtualInterfaceRoleAWDL ? "awdl" : nullptr;
+}
+
+inline bool AICValidAWDLInterfaceName(const uint8_t *name, size_t length) {
+    if (!name || length < 5) return false;
+    bool allZero = true;
+    for (size_t index = 0; index < length; ++index)
+        allZero &= name[index] == 0;
+    if (allZero) return true; // Let IO80211's namer select awdl0.
+    if (name[0] != 'a' || name[1] != 'w' || name[2] != 'd' ||
+        name[3] != 'l') return false;
+    size_t index = 4;
+    bool hasUnit = false;
+    while (index < length && name[index]) {
+        if (name[index] < '0' || name[index] > '9') return false;
+        hasUnit = true;
+        ++index;
+    }
+    if (!hasUnit || index == length) return false;
+    while (index < length) {
+        if (name[index++] != 0) return false;
+    }
+    return true;
+}
+
+inline bool AICValidAWDLCreateRequest(uint32_t requestVersion, uint32_t role,
+                                      const uint8_t *address,
+                                      size_t addressLength,
+                                      const uint8_t *name,
+                                      size_t nameLength) {
+    return requestVersion == 1 &&
+           AICSupportsVirtualInterface(role, address, addressLength) &&
+           AICValidAWDLInterfaceName(name, nameLength);
 }

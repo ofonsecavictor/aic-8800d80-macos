@@ -70,6 +70,8 @@ extern "C" IOReturn AICNativeBeginJoin(
     IOService *service, const AICWCLJoinRequest *request);
 extern "C" IOReturn AICNativeAbortJoin(IOService *service);
 extern "C" IOReturn AICNativeRequestLeave(IOService *service);
+extern "C" IOReturn AICNativeCreateAWDLInterface(
+    IOService *service, const apple80211_virt_if_create_data *request);
 
 OSDefineMetaClassAndStructors(AICInfraInterface, IO80211InfraProtocol)
 
@@ -106,6 +108,12 @@ IOReturn AICInfraInterface::setMacAddress(ether_addr &address) {
     if (status == kIOReturnSuccess)
         bcopy(&address, &stationMac, sizeof(stationMac));
     return status;
+}
+
+IOReturn AICInfraInterface::setVIRTUAL_IF_CREATE(
+    apple80211_virt_if_create_data *request) {
+    if (!request || !radioProvider) return kIOReturnBadArgument;
+    return AICNativeCreateAWDLInterface(radioProvider, request);
 }
 
 IOReturn AICInfraInterface::getCHANNEL(apple80211_channel_data *data) {

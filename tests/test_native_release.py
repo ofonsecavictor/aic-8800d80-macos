@@ -14,6 +14,26 @@ SPEC.loader.exec_module(native_release)
 
 
 class NativeReleaseConfigTests(unittest.TestCase):
+    def test_generic_usb_opencore_recovery_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mount = Path(directory) / 'Recovery'
+            (mount / 'EFI/BOOT').mkdir(parents=True)
+            (mount / 'EFI/OC').mkdir(parents=True)
+            (mount / 'EFI/BOOT/BOOTx64.efi').write_bytes(b'boot')
+            (mount / 'EFI/OC/OpenCore.efi').write_bytes(b'oc')
+            info = {'MountPoint': str(mount), 'Internal': False,
+                    'BusProtocol': 'USB'}
+            self.assertTrue(native_release.recovery_volume_valid(mount, info))
+
+    def test_internal_or_incomplete_recovery_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mount = Path(directory) / 'Recovery'
+            (mount / 'EFI/BOOT').mkdir(parents=True)
+            (mount / 'EFI/BOOT/BOOTx64.efi').write_bytes(b'boot')
+            info = {'MountPoint': str(mount), 'Internal': True,
+                    'BusProtocol': 'USB'}
+            self.assertFalse(native_release.recovery_volume_valid(mount, info))
+
     def test_add_entry_does_not_modify_other_kexts(self):
         original = {'Kernel': {'Add': [{'BundlePath': 'Lilu.kext', 'Enabled': True}]}}
         updated = native_release.add_native_entry(original)

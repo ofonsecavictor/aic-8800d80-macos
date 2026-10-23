@@ -21,12 +21,10 @@ import time
 SUPPORT = Path('/Library/Application Support/AIC88M80Driver')
 KEXT_NAME = 'AICNativeProbe.kext'
 BUNDLE_ID = 'local.victor.AICNativeProbe'
-VERSION = '0.0.19'
+VERSION = '0.0.23'
 RECORD = SUPPORT / 'native-release.json'
 PROFILE = SUPPORT / 'wifi/profile.json'
-RECOVERY_IMAGE = Path('/Volumes/1401/AIC-EFI-backup-2026-10-22.JNSOPthj/efi-disk0s4.img')
-RECOVERY_VOLUME_UUID = '7f3560a7-f954-344b-a86f-51b971f855a4'
-RECOVERY_SHA256 = '2e9d1ae102e119684441fd11ed49459a67f951ef9a6cbcfd15d079d4313d5737'
+VOLUMES = Path('/Volumes')
 
 
 def native_entry():
@@ -118,18 +116,29 @@ def validate_bundle(bundle):
     return binary
 
 
+def recovery_volume_valid(mount, info):
+    """Accept a mounted external USB only when it contains a bootable OpenCore."""
+    return (info.get('MountPoint') == str(mount) and
+            not info.get('Internal', True) and
+            str(info.get('BusProtocol', '')).upper() == 'USB' and
+            (mount / 'EFI/BOOT/BOOTx64.efi').is_file() and
+            (mount / 'EFI/OC/OpenCore.efi').is_file())
+
+
 def verify_external_recovery():
-    """This experimental package is restricted to Victor's verified USB EFI."""
-    info = plistlib.loads(run('/usr/sbin/diskutil', 'info', '-plist',
-                              '/Volumes/1401').stdout)
-    if (info.get('VolumeUUID', '').lower() != RECOVERY_VOLUME_UUID or
-            info.get('MountPoint') != '/Volumes/1401' or info.get('Internal') or
-            info.get('BusProtocol') != 'USB' or
-            not Path('/Volumes/1401/EFI/BOOT/BOOTx64.efi').is_file() or
-            not Path('/Volumes/1401/EFI/OC/OpenCore.efi').is_file() or
-            not RECOVERY_IMAGE.is_file() or
-            sha256(RECOVERY_IMAGE) != RECOVERY_SHA256):
-        raise RuntimeError('Pendrive de recuperação 1401 não confere; EFI intacta')
+    """Require a generic, mounted OpenCore recovery USB before editing EFI."""
+    if VOLUMES.is_dir():
+        for mount in sorted(VOLUMES.iterdir()):
+            try:
+                info = plistlib.loads(run('/usr/sbin/diskutil', 'info',
+                                           '-plist', str(mount)).stdout)
+            except (OSError, subprocess.CalledProcessError, plistlib.InvalidFileException):
+                continue
+            if recovery_volume_valid(mount, info):
+                return str(mount)
+    raise RuntimeError(
+        'Conecte e monte um pendrive USB bootável com EFI/BOOT/BOOTx64.efi '
+        'e EFI/OC/OpenCore.efi; a EFI interna permaneceu intacta')
 
 
 def write_profile(native):

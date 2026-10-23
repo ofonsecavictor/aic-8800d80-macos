@@ -2,7 +2,12 @@
 
 ## Português
 
-**Estado:** pesquisa; nenhum suporte AirDrop foi implementado. A release v1.1.2 permanece inalterada.
+**Atualização de 23/10/2026:** a implementação chegou ao driver nativo 0.0.23
+e à release 1.4.0. O Wi-Fi nativo reiniciou sem novo panic e uma transferência
+real do Hackintosh para um iPhone foi concluída por AirDrop. O sentido iPhone
+para Hackintosh ainda não funciona. O restante deste documento preserva o
+histórico de pesquisa e deve ser lido como registro cronológico, não como o
+estado atual da release.
 
 No Mac de teste, o AIC enumera como `a69c:8d81`, mas não há `IO80211Interface` nem `awdl0`. O Wi-Fi atual usa um serviço próprio e uma interface de rede UTUN; isso fornece acesso à rede, não o enlace direto de que o AirDrop precisa. O [modelo de segurança da Apple](https://support.apple.com/en-ie/guide/security/sec2261183f4/web) descreve descoberta por Bluetooth LE e comunicação por Wi-Fi peer-to-peer.
 
@@ -87,7 +92,12 @@ O [caminho RX do driver AIC](https://github.com/radxa-pkg/aic8800/blob/e9e43ed/s
 
 ## English
 
-**Status:** research only; AirDrop support has not been implemented. Release v1.1.2 is unchanged.
+**2026-10-23 update:** development reached native driver 0.0.23 and release
+1.4.0. Native Wi-Fi survived a real reboot without a new panic, and a real
+Hackintosh-to-iPhone AirDrop file transfer completed. iPhone-to-Hackintosh
+transfers still do not work. The remainder of this document preserves the
+research history and should be read chronologically, not as the current
+release status.
 
 On the test Mac, the AIC enumerates as `a69c:8d81`, but neither `IO80211Interface` nor `awdl0` is present. The current Wi-Fi uses a custom service and a UTUN network interface; it provides network access, not the direct link AirDrop needs. [Apple's security documentation](https://support.apple.com/en-ie/guide/security/sec2261183f4/web) describes Bluetooth LE discovery and peer-to-peer Wi-Fi communication.
 
