@@ -73,4 +73,4 @@ Não instale a versão 1.3.3, que continha o kext 0.0.17 associado ao panic.
 - 164 testes automatizados do serviço, protocolo, associação e instalador.
 - Testes C++ dos contratos kernel/serviço, incluindo transferência em lote.
 - Pacote inspecionado com `pkgutil`, scripts e payload conferidos.
-- SHA‑256 publicado junto ao arquivo da release.
+- SHA‑256: `9c5e2d5fbfd9e2e5fbf0fa9929d061faeac4fab1780138f302c049dfd74c69ed`.
